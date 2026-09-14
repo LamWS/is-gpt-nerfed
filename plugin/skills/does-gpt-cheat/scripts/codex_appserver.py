@@ -1,0 +1,353 @@
+"""Minimal Codex app-server client used to run fingerprint probes in ephemeral forks.
+
+A probe never touches the user's thread: we spawn our own `codex app-server --stdio`, read the target
+thread's persisted settings, fork it `ephemeral: true` at its last completed turn (the same mechanism the
+desktop's `/side` uses), start exactly one text-only turn per fork, collect the model's answer, and exit.
+Ephemeral forks are never written to disk, so nothing appears in the Codex UI.
+
+The fork-and-verify sequence follows ModelTrace Guard (MIT, xqy2006), which pioneered probing Codex threads
+through native forks; see plugin/assets/modeltrace/provenance.json.
+"""
+from __future__ import annotations
+
+import json
+import os
+import random
+import subprocess
+import threading
+import time
+import uuid
+
+CLIENT_INFO = {"name": "does-gpt-cheat", "version": "0.2.0"}
+FINISHED_TURN = ("completed", "interrupted", "failed")
+MESSAGE_ITEMS = ("userMessage", "agentMessage", "reasoning", "hookPrompt")
+
+# Probe prompts adapted from ModelTrace Guard's prompts.mjs (MIT). The numerical task is what the
+# fingerprint bank was enrolled with; keep it stable.
+PROMPTS = {
+    "zh": ("直接选择 {n} 个 1 到 355（含边界）的整数。允许重复；不要排序、平衡频数、修复重复，也不要刻意构造等差规律。",
+           "直接回答一个 JSON 整数数组，不要解释。不要调用工具、读文件、运行代码或让其他模型代答；不要继续之前的任务。"),
+    "en": ("Directly choose {n} integers from 1 through 355, inclusive. Allow repeats. Do not sort, balance frequencies, "
+           "repair duplicates, or deliberately create an arithmetic pattern.",
+           "Reply directly with one JSON integer array and no explanation. Do not call tools, read files, execute code or ask "
+           "another model. Do not continue the preceding task."),
+}
+COUNT_RANGE = (292, 332)
+
+
+class AppServerError(RuntimeError):
+    pass
+
+
+def fork_prompt(language: str, count: int) -> str:
+    task, rules = PROMPTS.get(language) or PROMPTS["en"]
+    return task.replace("{n}", str(count)) + "\n" + rules
+
+
+class AppServer:
+    """JSON-RPC-over-stdio client. Server-initiated requests (approvals, user input) are always refused."""
+
+    def __init__(self, codex_bin: str, env: dict | None = None):
+        environ = dict(os.environ if env is None else env)
+        environ["DGC_PROBE_PROCESS"] = "1"
+        # Our private app-server must not fire anyone's hooks or desktop notifications while it probes.
+        args = [codex_bin, "app-server", "--stdio", "-c", "notify=[]", "-c", "features.hooks=false"]
+        self.proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                     stderr=subprocess.DEVNULL, env=environ, text=True, bufsize=1)
+        self._write_lock = threading.Lock()
+        self._cond = threading.Condition()
+        self._next_id = 0
+        self._pending: dict[int, dict] = {}
+        self.notifications: list[dict] = []
+        self.server_requests: list[dict] = []
+        self.closed = False
+        self._reader = threading.Thread(target=self._read_loop, daemon=True)
+        self._reader.start()
+
+    # -- transport -------------------------------------------------------------------------------
+    def _write(self, message: dict) -> None:
+        data = json.dumps(message) + "\n"
+        with self._write_lock:
+            try:
+                self.proc.stdin.write(data)
+                self.proc.stdin.flush()
+            except (BrokenPipeError, ValueError, OSError) as e:
+                raise AppServerError(f"codex app-server transport closed: {e}") from e
+
+    def _read_loop(self) -> None:
+        try:
+            for line in self.proc.stdout:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    message = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(message, dict):
+                    continue
+                if "method" in message and "id" in message:  # server → client request: refuse
+                    try:
+                        self._write({"id": message["id"], "error": {"code": -32601,
+                                    "message": "does-gpt-cheat probes do not execute tools or grant permissions"}})
+                    except AppServerError:
+                        pass
+                    with self._cond:
+                        self.server_requests.append(message)
+                        self.notifications.append({"method": "_server_request", "params": {**(message.get("params") or {}),
+                                                                                             "_request_method": message["method"]}})
+                        self._cond.notify_all()
+                elif "id" in message:
+                    with self._cond:
+                        entry = self._pending.pop(message["id"], None)
+                        if entry is not None:
+                            entry["result"], entry["error"], entry["done"] = message.get("result"), message.get("error"), True
+                        self._cond.notify_all()
+                else:
+                    with self._cond:
+                        self.notifications.append(message)
+                        self._cond.notify_all()
+        finally:
+            with self._cond:
+                self.closed = True
+                self._cond.notify_all()
+
+    def request(self, method: str, params: dict | None = None, timeout: float = 15.0):
+        with self._cond:
+            self._next_id += 1
+            request_id = self._next_id
+            entry = {"done": False, "result": None, "error": None, "method": method}
+            self._pending[request_id] = entry
+        self._write({"id": request_id, "method": method, "params": params or {}})
+        deadline = time.time() + timeout
+        with self._cond:
+            while not entry["done"]:
+                if self.closed:
+                    raise AppServerError(f"codex app-server exited during {method}")
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    self._pending.pop(request_id, None)
+                    raise AppServerError(f"codex {method} timed out after {timeout:.0f}s")
+                self._cond.wait(remaining)
+        if entry["error"]:
+            raise AppServerError(f"codex {method}: {(entry['error'] or {}).get('message') or entry['error']}")
+        return entry["result"]
+
+    def notify(self, method: str, params: dict | None = None) -> None:
+        self._write({"method": method, "params": params or {}})
+
+    def wait_for_notifications(self, seen: int, timeout: float) -> bool:
+        with self._cond:
+            if len(self.notifications) > seen or self.closed:
+                return True
+            self._cond.wait(timeout)
+            return len(self.notifications) > seen or self.closed
+
+    def initialize(self):
+        result = self.request("initialize", {"clientInfo": CLIENT_INFO, "capabilities": {"experimentalApi": True}}, 20)
+        self.notify("initialized")
+        return result
+
+    def close(self) -> None:
+        try:
+            self.proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            self.proc.wait(timeout=2)
+        except Exception:
+            try:
+                self.proc.kill()
+                self.proc.wait(timeout=3)
+            except Exception:
+                pass
+
+
+# -- thread helpers -----------------------------------------------------------------------------
+
+
+def read_thread(app: AppServer, thread_id: str) -> dict:
+    thread = (app.request("thread/read", {"threadId": thread_id, "includeTurns": False}, 20) or {}).get("thread") or {}
+    if thread.get("id") != thread_id:
+        raise AppServerError("codex returned metadata for a different thread")
+    if thread.get("ephemeral") or not isinstance(thread.get("path"), str) or not thread["path"]:
+        raise AppServerError("thread has no persisted history to fork (ephemeral or not saved yet)")
+    for key in ("model", "modelProvider", "cwd"):
+        if not thread.get(key):
+            raise AppServerError(f"thread metadata lacks {key}")
+    return thread
+
+
+def last_turn(app: AppServer, thread_id: str) -> dict:
+    data = (app.request("thread/turns/list", {"threadId": thread_id, "limit": 1, "itemsView": "notLoaded",
+                                              "sortDirection": "desc"}, 20) or {}).get("data") or []
+    if not data or not isinstance(data[0].get("id"), str):
+        raise AppServerError("thread has no turns yet")
+    if data[0].get("status") not in FINISHED_TURN:
+        raise AppServerError(f"thread's last turn is {data[0].get('status')}; wait for it to finish")
+    return data[0]
+
+
+def fork_params(thread: dict, turn_id: str) -> dict:
+    params = {"threadId": thread["id"], "lastTurnId": turn_id, "ephemeral": True, "excludeTurns": True,
+              "model": thread["model"], "modelProvider": thread["modelProvider"], "cwd": thread["cwd"]}
+    if thread.get("reasoningEffort"):
+        params["config"] = {"model_reasoning_effort": thread["reasoningEffort"]}
+    return params
+
+
+def fork_ephemeral(app: AppServer, thread: dict, turn_id: str) -> dict:
+    response = app.request("thread/fork", fork_params(thread, turn_id), 45) or {}
+    fork = response.get("thread") or {}
+    if not fork.get("ephemeral") or not fork.get("id") or fork.get("path") or fork["id"] == thread["id"] \
+            or fork.get("forkedFromId") != thread["id"]:
+        raise AppServerError("codex did not create an ephemeral fork of the target thread")
+    if response.get("model") != thread["model"] or response.get("modelProvider") != thread["modelProvider"]:
+        raise AppServerError(f"fork settings differ from the thread ({response.get('model')} vs {thread['model']})")
+    if thread.get("reasoningEffort") and response.get("reasoningEffort") not in (None, thread["reasoningEffort"]):
+        raise AppServerError("fork reasoning effort differs from the thread")
+    return {"id": fork["id"], "model": response.get("model"), "provider": response.get("modelProvider"),
+            "effort": response.get("reasoningEffort"), "cwd": response.get("cwd"), "service_tier": response.get("serviceTier")}
+
+
+# -- probe runner -------------------------------------------------------------------------------
+
+
+def run_turns(app: AppServer, forks: list[dict], deadline: float, parallel: bool = True) -> None:
+    """Start one text-only turn per fork and collect the final agent message. Mutates each fork dict:
+    text, error, usage, turn_id, elapsed_s."""
+    states = {f["id"]: f for f in forks}
+    for f in forks:
+        f.update({"text": None, "other": [], "done": False, "error": None, "usage": None, "turn_id": None, "started_at": None})
+
+    def start(f: dict) -> None:
+        f["started_at"] = time.time()
+        try:
+            response = app.request("turn/start", {"threadId": f["id"], "input": [{"type": "text", "text": f["prompt"]}]},
+                                   max(5.0, min(30.0, deadline - time.time())))
+            f["turn_id"] = ((response or {}).get("turn") or {}).get("id")
+        except AppServerError as e:
+            f["error"], f["done"] = str(e), True
+
+    def finish(f: dict, error: str | None = None) -> None:
+        if f["done"]:
+            return
+        f["done"] = True
+        f["elapsed_s"] = round(time.time() - (f["started_at"] or time.time()), 1)
+        if error:
+            f["error"] = error
+        elif f["text"] is None:
+            f["text"] = f["other"][0] if len(f["other"]) == 1 else ("\n".join(f["other"]) if f["other"] else None)
+            if f["text"] is None:
+                f["error"] = "probe did not return a final text answer"
+
+    def handle(message: dict) -> None:
+        method, params = message.get("method"), message.get("params") or {}
+        f = states.get(params.get("threadId"))
+        if not f or f["done"]:
+            return
+        if method == "item/started":
+            if (params.get("item") or {}).get("type") not in MESSAGE_ITEMS:
+                finish(f, f"probe attempted a tool ({(params.get('item') or {}).get('type')}); no sample accepted")
+        elif method == "item/completed":
+            item = params.get("item") or {}
+            if item.get("type") == "agentMessage":
+                if item.get("phase") in ("final_answer", "final"):
+                    f["text"] = item.get("text")
+                elif not item.get("phase"):
+                    f["other"].append(item.get("text") or "")
+        elif method == "thread/tokenUsage/updated":
+            last = (params.get("tokenUsage") or {}).get("last") or {}
+            if last:
+                f["usage"] = {"input": last.get("inputTokens"), "cached": last.get("cachedInputTokens"), "output": last.get("outputTokens")}
+        elif method == "turn/completed":
+            turn = params.get("turn") or {}
+            if f["turn_id"] and turn.get("id") not in (None, f["turn_id"]):
+                return
+            finish(f, None if turn.get("status") == "completed" else f"probe turn ended with status {turn.get('status')}")
+        elif method == "error":
+            if not params.get("willRetry"):
+                finish(f, f"probe inference failed: {(params.get('error') or {}).get('message') or params.get('message') or 'error'}")
+        elif method == "_server_request":
+            finish(f, f"probe requested {params.get('_request_method')}; refused, no sample accepted")
+
+    pending = list(forks)
+    if parallel:
+        for f in pending:
+            start(f)
+        pending = []
+    seen = 0
+    while time.time() < deadline:
+        if pending and all(f["done"] for f in forks if f not in pending):
+            start(pending.pop(0))
+        if all(f["done"] for f in forks):
+            break
+        app.wait_for_notifications(seen, 1.0)
+        while seen < len(app.notifications):
+            handle(app.notifications[seen])
+            seen += 1
+        if app.closed:
+            for f in forks:
+                finish(f, "codex app-server exited before the probe completed")
+            break
+    for f in forks:
+        if not f["done"]:
+            finish(f, "probe deadline expired")
+            if f.get("turn_id"):
+                try:
+                    app.request("turn/interrupt", {"threadId": f["id"], "turnId": f["turn_id"]}, 3)
+                except AppServerError:
+                    pass
+        f.pop("other", None)
+        f.pop("started_at", None)
+
+
+def probe_thread(codex_bin: str, thread_id: str, queries: int = 3, languages=("zh", "en"), timeout_s: float = 180,
+                 parallel: bool = True, rng: random.Random | None = None) -> dict:
+    """Fork `thread_id` `queries` times (same last turn), ask each fork for a number sequence, return the answers."""
+    rng = rng or random.Random()
+    t0 = time.time()
+    deadline = t0 + timeout_s
+    app = AppServer(codex_bin)
+    try:
+        app.initialize()
+        thread = read_thread(app, thread_id)
+        turn = last_turn(app, thread_id)
+        forks = []
+        for _ in range(max(1, int(queries))):
+            fork = fork_ephemeral(app, thread, turn["id"])
+            fork["language"] = rng.choice(list(languages) or ["en"])
+            fork["count"] = rng.randint(*COUNT_RANGE)
+            fork["prompt"] = fork_prompt(fork["language"], fork["count"])
+            forks.append(fork)
+        run_turns(app, forks, deadline, parallel=parallel)
+    finally:
+        app.close()
+    return {
+        "thread": {"id": thread["id"], "model": thread.get("model"), "provider": thread.get("modelProvider"),
+                   "effort": thread.get("reasoningEffort"), "cwd": thread.get("cwd"), "path": thread.get("path"),
+                   "name": thread.get("name"), "last_turn": turn["id"]},
+        "forks": [{k: v for k, v in f.items() if k != "prompt"} for f in forks],
+        "elapsed_s": round(time.time() - t0, 1), "parallel": parallel,
+        "server_requests": len(app.server_requests),
+    }
+
+
+def fork_doctor(codex_bin: str, thread_id: str) -> dict:
+    """Prove that an ephemeral fork of the thread can be created, without starting any model turn."""
+    t0 = time.time()
+    app = AppServer(codex_bin)
+    try:
+        app.initialize()
+        thread = read_thread(app, thread_id)
+        turn = last_turn(app, thread_id)
+        fork = fork_ephemeral(app, thread, turn["id"])
+    finally:
+        app.close()
+    return {"ok": True, "thread": thread_id, "model": thread.get("model"), "effort": thread.get("reasoningEffort"),
+            "provider": thread.get("modelProvider"), "cwd": thread.get("cwd"), "last_turn": turn["id"],
+            "fork_id": fork["id"], "elapsed_s": round(time.time() - t0, 1), "inference_requests": 0}
+
+
+def new_probe_id() -> str:
+    return uuid.uuid4().hex[:10]

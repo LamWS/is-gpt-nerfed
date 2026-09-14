@@ -1,0 +1,1751 @@
+#!/usr/bin/env python3
+"""dgc — does-gpt-cheat: transparent, local detection of silent model downgrades in Codex sessions.
+
+Three layers, all local, nothing leaves the machine:
+
+  passive  Codex lifecycle hooks feed every turn into `dgc hook`. The session rollout (JSONL) is scanned
+           incrementally for silent model / reasoning-effort / context-window changes and for hidden
+           internal models. Zero tokens.
+  active   A ModelTrace fingerprint probe (https://github.com/xqy2006/ModelTrace, MIT): the thread is forked
+           `ephemeral: true` N times at its last completed turn (the mechanism behind Codex's `/side`), each
+           fork is asked for a long "random" integer sequence, and the sequences are attributed to a model
+           with ModelTrace's calibrated fingerprint bank. Expected model ≠ fingerprint → the pet speaks up.
+           Inside a `/side` conversation the model answers the same challenge directly.
+  pet      Verdicts arrive as a Codex-pet card, a macOS notification, a system message in the thread and
+           (optionally) a sound. Optional Guard-style halt: deny work tools after a mismatch until `dgc resume`.
+
+State lives under $DGC_HOME (default: $CODEX_HOME/does-gpt-cheat, i.e. ~/.codex/does-gpt-cheat).
+"""
+from __future__ import annotations
+
+import argparse
+import contextlib
+import datetime as dt
+import fcntl
+import glob
+import json
+import os
+import random
+import re
+import shutil
+import sqlite3
+import subprocess
+import sys
+import time
+import uuid
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import codex_appserver as cas  # noqa: E402
+import modeltrace_core as core  # noqa: E402
+
+VERSION = "0.2.0"
+DGC_BIN = os.path.abspath(__file__)
+SKILL_DIR = os.path.dirname(HERE)
+PLUGIN_ROOT = os.environ.get("PLUGIN_ROOT") or os.environ.get("CLAUDE_PLUGIN_ROOT") or os.path.dirname(os.path.dirname(SKILL_DIR))
+CODEX_HOME = os.environ.get("CODEX_HOME") or os.path.join(os.path.expanduser("~"), ".codex")
+DGC_HOME = os.environ.get("DGC_HOME") or os.path.join(CODEX_HOME, "does-gpt-cheat")
+CONFIG_PATH = os.path.join(DGC_HOME, "config.json")
+EVENTS_PATH = os.path.join(DGC_HOME, "events.jsonl")
+PROBES_INDEX = os.path.join(DGC_HOME, "probes.jsonl")
+SESSIONS_DIR = os.path.join(DGC_HOME, "sessions")
+PROBES_DIR = os.path.join(DGC_HOME, "probes")
+ERRORS_PATH = os.path.join(DGC_HOME, "errors.log")
+WORKER_LOG = os.path.join(DGC_HOME, "worker.log")
+BANK_PATH = os.path.join(PLUGIN_ROOT, "assets", "modeltrace", "unified_bank.json")
+
+PET_ID = "does-gpt-cheat"
+PLUGIN_NAME = "does-gpt-cheat"
+MARKETPLACE_NAME = "does-gpt-cheat"
+SKILL_CMD = "$does-gpt-cheat"
+SIDE_CMD = "/side $does-gpt-cheat"
+APP_CODEX_BINS = [
+    "/Applications/ChatGPT.app/Contents/Resources/codex",
+    "/Applications/Codex.app/Contents/Resources/codex",
+]
+CODEX_NOTIFICATION_WAV = "/Applications/ChatGPT.app/Contents/Resources/codex-notification.wav"
+
+DEFAULT_CONFIG = {
+    "frequency": "turns:8",          # "turns:N" | "Nm" (minutes) | "manual"
+    "mode": "auto",                  # auto: background fork probe when due | nudge: only remind the user
+    "queries": 3,                    # parallel ephemeral forks per probe (ModelTrace calibrates 1..3)
+    "parallel": True,
+    "languages": ["zh", "en"],
+    "probe_timeout_s": 180,
+    "passive": True,                 # scan rollouts on every Stop hook
+    "notify": True,                  # macOS notification when the pet has something to say
+    "notify_on_ok": False,           # also notify on MATCH verdicts
+    "announce_ok": False,            # also push MATCH verdicts into the thread
+    "sound": True,                   # Codex notification sound on a downgrade verdict
+    "halt_on_mismatch": False,       # Guard-style: deny work tools after a mismatch until `dgc resume`
+    "pet_name": "Inspector Astra",
+    "codex_bin": None,
+    "nudge_cooldown_turns": 4,
+}
+
+EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
+SIZE_TAGS = (("nano", 0), ("mini", 1), ("spark", 1), ("lite", 1), ("small", 1), ("flash", 1),
+             ("reserve", 1), ("auto-review", 1))
+
+# --------------------------------------------------------------------------------------- utilities
+
+
+def now() -> float:
+    return time.time()
+
+
+def iso(ts: float | None = None) -> str:
+    return dt.datetime.fromtimestamp(ts if ts is not None else now(), dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def ensure_dirs() -> None:
+    for d in (DGC_HOME, SESSIONS_DIR, PROBES_DIR):
+        os.makedirs(d, exist_ok=True)
+
+
+def read_json(path: str, default=None):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+
+def write_json(path: str, obj) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def append_jsonl(path: str, obj) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+
+
+def iter_jsonl(path: str):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        yield json.loads(line)
+                    except Exception:
+                        continue
+    except OSError:
+        return
+
+
+def tail_jsonl(path: str, n: int) -> list:
+    return list(iter_jsonl(path))[-n:]
+
+
+def log_error(msg: str) -> None:
+    try:
+        os.makedirs(DGC_HOME, exist_ok=True)
+        with open(ERRORS_PATH, "a", encoding="utf-8") as f:
+            f.write(f"{iso()} {msg}\n")
+    except Exception:
+        pass
+
+
+def short(s, n: int = 8) -> str:
+    s = str(s or "")
+    return s[:n] + "…" if len(s) > n else s
+
+
+def safe_name(s: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]", "_", str(s))[:120] or "unknown"
+
+
+def pid_alive(pid) -> bool:
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except Exception:
+        return False
+
+
+# ----------------------------------------------------------------------------------------- config
+
+
+def load_config() -> dict:
+    cfg = dict(DEFAULT_CONFIG)
+    cfg.update(read_json(CONFIG_PATH, {}) or {})
+    return cfg
+
+
+def save_config(cfg: dict) -> None:
+    write_json(CONFIG_PATH, cfg)
+
+
+def parse_frequency(s) -> tuple[str, int]:
+    s = str(s or "").strip().lower()
+    if s in ("", "manual", "off", "never", "none"):
+        return ("manual", 0)
+    m = re.match(r"^(?:every\s+)?(\d+)\s*(turns?|t|prompts?)$", s) or re.match(r"^turns?[:=](\d+)$", s)
+    if m:
+        return ("turns", max(1, int(m.group(1))))
+    m = re.match(r"^(?:every\s+)?(\d+)\s*(m|min|mins|minutes?)$", s) or re.match(r"^min(?:ute)?s?[:=](\d+)$", s)
+    if m:
+        return ("minutes", max(1, int(m.group(1))))
+    m = re.match(r"^(?:every\s+)?(\d+)\s*(h|hr|hrs|hours?)$", s) or re.match(r"^hours?[:=](\d+)$", s)
+    if m:
+        return ("minutes", max(1, int(m.group(1)) * 60))
+    raise ValueError(f"unrecognized frequency {s!r} (use e.g. 'turns:8', '30m', '2h', 'manual')")
+
+
+def coerce_config_value(key: str, value: str):
+    if key in ("passive", "notify", "notify_on_ok", "announce_ok", "sound", "parallel", "halt_on_mismatch"):
+        return str(value).strip().lower() in ("1", "true", "yes", "on")
+    if key in ("nudge_cooldown_turns", "probe_timeout_s"):
+        return max(1, int(value))
+    if key == "queries":
+        return max(1, min(3, int(value)))
+    if key == "languages":
+        langs = [v.strip() for v in re.split(r"[,\s]+", str(value)) if v.strip()]
+        bad = [v for v in langs if v not in cas.PROMPTS]
+        if bad or not langs:
+            raise ValueError(f"languages must be a comma-separated subset of {', '.join(cas.PROMPTS)}")
+        return langs
+    if key == "frequency":
+        parse_frequency(value)
+        return value
+    if key == "mode":
+        v = str(value).strip().lower()
+        if v not in ("auto", "nudge"):
+            raise ValueError("mode must be auto or nudge")
+        return v
+    if key == "codex_bin":
+        return None if value in ("", "null", "none") else value
+    return value
+
+
+# ---------------------------------------------------------------------------------- model catalog
+
+
+def load_catalog() -> dict:
+    d = read_json(os.path.join(CODEX_HOME, "models_cache.json"), {}) or {}
+    models = d.get("models") if isinstance(d, dict) else None
+    if isinstance(models, dict):
+        models = list(models.values())
+    out = {}
+    for m in models or []:
+        if isinstance(m, dict) and m.get("slug"):
+            out[m["slug"]] = {"display_name": m.get("display_name"), "visibility": m.get("visibility"),
+                              "context_window": m.get("context_window"), "priority": m.get("priority")}
+    return out
+
+
+def hidden_models(cat: dict | None = None) -> frozenset:
+    cat = load_catalog() if cat is None else cat
+    return frozenset(s.lower() for s, m in cat.items() if (m.get("visibility") or "").lower() == "hide")
+
+
+def model_rank(slug: str | None) -> tuple:
+    s = (slug or "").lower()
+    m = re.search(r"gpt-?(\d+)(?:\.(\d+))?", s)
+    ver = float(f"{m.group(1)}.{m.group(2) or '0'}") if m else 0.0
+    size = 3
+    for tag, val in SIZE_TAGS:
+        if tag in s:
+            size = min(size, val)
+    return (ver, size)
+
+
+def classify_change(old: str | None, new: str | None) -> str:
+    ro, rn = model_rank(old), model_rank(new)
+    if rn < ro:
+        return "downgrade"
+    if rn > ro:
+        return "upgrade"
+    return "lateral"
+
+
+def effort_idx(e) -> int | None:
+    try:
+        return EFFORTS.index(str(e or "").lower())
+    except ValueError:
+        return None
+
+
+def normalize_model(slug) -> str:
+    s = str(slug or "").strip().lower()
+    return s.split("/", 1)[1] if "/" in s else s
+
+
+def config_toml_model() -> tuple[str | None, str | None]:
+    model = effort = None
+    try:
+        with open(os.path.join(CODEX_HOME, "config.toml"), "r", encoding="utf-8") as f:
+            for line in f:
+                s = line.strip()
+                if s.startswith("["):
+                    break
+                m = re.match(r'^model\s*=\s*"([^"]+)"', s)
+                if m:
+                    model = m.group(1)
+                m = re.match(r'^model_reasoning_effort\s*=\s*"([^"]+)"', s)
+                if m:
+                    effort = m.group(1)
+    except OSError:
+        pass
+    return model, effort
+
+
+_BANK = None
+
+
+def load_bank() -> dict:
+    global _BANK
+    if _BANK is None:
+        if not os.path.exists(BANK_PATH):
+            raise SystemExit(f"fingerprint bank missing: {BANK_PATH}")
+        _BANK = core.load_bank(BANK_PATH)
+    return _BANK
+
+
+# ------------------------------------------------------------------------------- codex state DB
+
+
+def state_db_path() -> str | None:
+    cands = sorted(glob.glob(os.path.join(CODEX_HOME, "state_*.sqlite")),
+                   key=lambda p: int(re.search(r"state_(\d+)", p).group(1)))
+    return cands[-1] if cands else None
+
+
+def db_query(sql: str, params=()) -> list[dict]:
+    path = state_db_path()
+    if not path:
+        return []
+    try:
+        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2)
+        con.row_factory = sqlite3.Row
+        try:
+            return [dict(r) for r in con.execute(sql, params).fetchall()]
+        finally:
+            con.close()
+    except Exception as e:
+        log_error(f"db_query failed: {e}")
+        return []
+
+
+THREAD_COLS = "id, rollout_path, thread_source, cwd, model, reasoning_effort, archived, updated_at_ms, title, name, originator"
+
+
+def db_thread(tid: str) -> dict | None:
+    rows = db_query(f"SELECT {THREAD_COLS} FROM threads WHERE id = ?", (tid,))
+    return rows[0] if rows else None
+
+
+def db_recent_main_threads(limit: int = 25) -> list[dict]:
+    return db_query(f"SELECT {THREAD_COLS} FROM threads WHERE archived = 0 AND (thread_source IS NULL OR thread_source != 'subagent') "
+                    f"ORDER BY updated_at_ms DESC LIMIT ?", (limit,))
+
+
+def db_recent_main_thread(cwd: str | None, exclude: str | None = None) -> dict | None:
+    rows = [r for r in db_recent_main_threads() if r["id"] != exclude]
+    if cwd:
+        for r in rows:
+            if r.get("cwd") == cwd:
+                return r
+    return rows[0] if rows else None
+
+
+def thread_is_persisted(tid: str) -> bool:
+    row = db_thread(tid)
+    return bool(row and row.get("rollout_path") and os.path.exists(row["rollout_path"]))
+
+
+# ------------------------------------------------------------------------------- rollout scanner
+
+
+def new_scan_state() -> dict:
+    return {"cursor": 0, "model": None, "first_model": None, "effort": None, "ctx": None, "tier": None,
+            "applied": None, "turns": 0, "instructions_family": None, "originator": None,
+            "cli_version": None, "models_seen": {}, "efforts_seen": {}, "ev_keys": []}
+
+
+def scan_rollout(path: str, scan: dict, hidden=frozenset(), cap_bytes: int = 64 << 20) -> list[dict]:
+    """Incrementally scan a Codex rollout JSONL file. Mutates `scan`; returns NEW evidence records.
+
+    hard  -> something changed underneath the user with no settings change (or a hidden model ran)
+    soft  -> a change that went through thread settings; needs the user to confirm they chose it
+    info  -> logged for completeness
+    """
+    new_ev: list[dict] = []
+
+    def add(kind: str, severity: str, detail: str, ts=None, turn=None):
+        key = f"{kind}|{detail}"
+        keys = scan.setdefault("ev_keys", [])
+        if key in keys:
+            return
+        keys.append(key)
+        new_ev.append({"ts": ts or iso(), "kind": kind, "severity": severity, "detail": detail, "turn_id": turn})
+
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return new_ev
+    cur = int(scan.get("cursor") or 0)
+    if cur > size:
+        cur = 0
+    if cur >= size:
+        return new_ev
+    with open(path, "rb") as f:
+        f.seek(cur)
+        data = f.read(min(size - cur, cap_bytes))
+    end = data.rfind(b"\n")
+    if end < 0:
+        return new_ev
+    for raw in data[:end].split(b"\n"):
+        if not raw.strip():
+            continue
+        try:
+            rec = json.loads(raw)
+        except Exception:
+            continue
+        rtype, p, ts = rec.get("type"), rec.get("payload") or {}, rec.get("timestamp")
+        if rtype == "session_meta":
+            scan["originator"], scan["cli_version"] = p.get("originator"), p.get("cli_version")
+            bi = p.get("base_instructions")
+            text = bi.get("text") if isinstance(bi, dict) else (bi if isinstance(bi, str) else "")
+            m = re.search(r"based on (GPT-[\w.\-]+)", text or "", re.I)
+            if m:
+                scan["instructions_family"] = m.group(1)
+        elif rtype == "turn_context":
+            model = p.get("model")
+            settings = (p.get("collaboration_mode") or {}).get("settings") or {}
+            effort = settings.get("reasoning_effort") or p.get("reasoning_effort") or p.get("effort")
+            turn = p.get("turn_id")
+            scan["turns"] = int(scan.get("turns") or 0) + 1
+            applied = scan.get("applied") or {}
+            if model:
+                scan["models_seen"][model] = scan["models_seen"].get(model, 0) + 1
+                if model.lower() in hidden:
+                    add("hidden_model", "hard", f"hidden/internal model {model} ran a turn", ts, turn)
+                if scan["model"] is None:
+                    scan["model"] = scan["first_model"] = model
+                elif model != scan["model"]:
+                    change = classify_change(scan["model"], model)
+                    if applied.get("model") == model:
+                        add("applied_model_change", "soft" if change == "downgrade" else "info",
+                            f"thread settings switched model {scan['model']} → {model} ({change})", ts, turn)
+                    else:
+                        add("silent_model_change", "hard" if change == "downgrade" else "soft",
+                            f"model {scan['model']} → {model} with no settings change ({change})", ts, turn)
+                    scan["model"] = model
+            if effort:
+                scan["efforts_seen"][effort] = scan["efforts_seen"].get(effort, 0) + 1
+                if scan["effort"] is None:
+                    scan["effort"] = effort
+                elif effort != scan["effort"]:
+                    oi, ni = effort_idx(scan["effort"]), effort_idx(effort)
+                    lower = oi is not None and ni is not None and ni < oi
+                    if applied.get("effort") == effort:
+                        add("applied_effort_change", "soft" if lower else "info",
+                            f"thread settings switched reasoning effort {scan['effort']} → {effort}", ts, turn)
+                    else:
+                        add("silent_effort_change", "hard" if lower else "soft",
+                            f"reasoning effort {scan['effort']} → {effort} with no settings change", ts, turn)
+                    scan["effort"] = effort
+        elif rtype == "event_msg":
+            et = p.get("type")
+            if et == "thread_settings_applied":
+                s = p.get("thread_settings") or {}
+                scan["applied"] = {"model": s.get("model"), "effort": s.get("reasoning_effort"), "tier": s.get("service_tier"), "ts": ts}
+                tier = s.get("service_tier")
+                if tier:
+                    if scan["tier"] is None:
+                        scan["tier"] = tier
+                    elif tier != scan["tier"]:  # speed tier, not intelligence: record only
+                        add("service_tier_change", "info", f"service tier {scan['tier']} → {tier}", ts)
+                        scan["tier"] = tier
+            elif et == "token_count":
+                ctx = (p.get("info") or {}).get("model_context_window")
+                if isinstance(ctx, int) and ctx > 0:
+                    if scan["ctx"] is None:
+                        scan["ctx"] = ctx
+                    elif ctx != scan["ctx"]:
+                        add("context_window_change", "hard" if ctx < scan["ctx"] else "info",
+                            f"model context window {scan['ctx']} → {ctx}", ts)
+                        scan["ctx"] = ctx
+    scan["cursor"] = cur + end + 1
+    return new_ev
+
+
+def scan_full(path: str, hidden=None, cap_bytes: int = 256 << 20) -> tuple[dict, list[dict]]:
+    scan = new_scan_state()
+    ev = scan_rollout(path, scan, hidden if hidden is not None else hidden_models(), cap_bytes=cap_bytes)
+    return scan, ev
+
+
+# ------------------------------------------------------------------------------- session ledger
+
+
+def session_path(sid: str) -> str:
+    return os.path.join(SESSIONS_DIR, safe_name(sid) + ".json")
+
+
+def new_session(sid: str) -> dict:
+    return {"sid": sid, "created": iso(), "created_ts": now(), "updated": iso(), "cwd": None, "model": None,
+            "transcript_path": None, "kind": "unknown", "thread_source": None, "parent_thread_id": None,
+            "link_method": None, "turns": 0, "last_probe_turn": 0, "last_probe_ts": 0.0,
+            "last_nudge_turn": -999, "last_nudge_ts": 0.0, "tools": [], "evidence": [],
+            "scan": new_scan_state(), "ended": None, "hook_events": 0,
+            "alerts": [], "halt": None, "probe_running": None, "requested": False, "probes": []}
+
+
+def load_session(sid: str) -> dict:
+    base = new_session(sid)
+    st = read_json(session_path(sid))
+    if st:
+        base.update(st)
+    return base
+
+
+def save_session(st: dict) -> None:
+    st["updated"] = iso()
+    write_json(session_path(st["sid"]), st)
+
+
+@contextlib.contextmanager
+def locked_session(sid: str):
+    """Load-modify-save under an exclusive file lock (hooks and background workers touch the same file)."""
+    ensure_dirs()
+    lock_path = session_path(sid) + ".lock"
+    with open(lock_path, "a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            st = load_session(sid)
+            yield st
+            save_session(st)
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def all_sessions() -> list[dict]:
+    out = []
+    for p in glob.glob(os.path.join(SESSIONS_DIR, "*.json")):
+        st = read_json(p)
+        if st:
+            out.append(st)
+    out.sort(key=lambda s: s.get("updated") or "", reverse=True)
+    return out
+
+
+def link_session(st: dict) -> None:
+    row = db_thread(st["sid"])
+    if row:
+        st["thread_source"] = row.get("thread_source")
+        st["kind"] = "subagent" if row.get("thread_source") == "subagent" else "main"
+        st["link_method"] = "state-db"
+        if not st.get("transcript_path") and row.get("rollout_path") and os.path.exists(row["rollout_path"]):
+            st["transcript_path"] = row["rollout_path"]
+        if not st.get("model") and row.get("model"):
+            st["model"] = row["model"]
+        return
+    if st.get("transcript_path") and os.path.exists(st["transcript_path"]):
+        st["kind"], st["link_method"] = "main", "transcript-path"
+        return
+    parent = db_recent_main_thread(st.get("cwd"), exclude=st["sid"])
+    if parent:
+        st["parent_thread_id"], st["kind"], st["link_method"] = parent["id"], "side", "recent-main-thread-guess"
+        if not st.get("model") and parent.get("model"):
+            st["model"] = parent["model"]
+
+
+def probe_due(st: dict, cfg: dict) -> bool:
+    try:
+        kind, n = parse_frequency(cfg.get("frequency"))
+    except ValueError:
+        return False
+    if kind == "manual":
+        return False
+    if kind == "turns":
+        since_probe = st["turns"] - int(st.get("last_probe_turn") or 0)
+        since_nudge = st["turns"] - int(st.get("last_nudge_turn") if st.get("last_nudge_turn") is not None else -999)
+        cooldown = max(1, min(n, int(cfg.get("nudge_cooldown_turns") or 1)))
+        return since_probe >= n and since_nudge >= cooldown
+    last = max(float(st.get("last_probe_ts") or 0), float(st.get("last_nudge_ts") or 0), float(st.get("created_ts") or 0))
+    return (now() - last) >= n * 60
+
+
+def tool_command_preview(payload: dict) -> str:
+    ti = payload.get("tool_input")
+    cmd = None
+    if isinstance(ti, dict):
+        for k in ("command", "cmd", "input", "code", "script"):
+            if ti.get(k):
+                cmd = ti[k]
+                break
+        if cmd is None:
+            cmd = json.dumps(ti, ensure_ascii=False)
+    elif ti is not None:
+        cmd = ti
+    if isinstance(cmd, list):
+        cmd = " ".join(str(c) for c in cmd)
+    return str(cmd or "")[:240]
+
+
+def is_dgc_command(payload: dict) -> bool:
+    return "dgc" in tool_command_preview(payload) or "does-gpt-cheat" in tool_command_preview(payload)
+
+
+def codex_bin(cfg: dict | None = None) -> str | None:
+    cfg = cfg or load_config()
+    if cfg.get("codex_bin") and os.path.exists(cfg["codex_bin"]):
+        return cfg["codex_bin"]
+    w = shutil.which("codex")
+    if w:
+        return w
+    for p in APP_CODEX_BINS:
+        if os.path.exists(p):
+            return p
+    return None
+
+
+# --------------------------------------------------------------------------------------- the pet
+
+LINES = {
+    "MISMATCH_downgrade": [
+        "🎉 Congrats! You've been downgraded! You asked for {expected}; the fingerprint says {top} ({p:.0%}, {n}/{q} answers). Enjoy the discount you didn't ask for.",
+        "Great news: your {expected} session is answering like {top} ({p:.0%}). Nobody told you, but somebody saved money. Congrats!",
+    ],
+    "MISMATCH_upgrade": [
+        "Congrats! You've been secretly upgraded: you asked for {expected}, the fingerprint says {top} ({p:.0%}). Don't tell anyone.",
+    ],
+    "MISMATCH_lateral": [
+        "Congrats! You've been… re-routed. You asked for {expected}, the fingerprint says {top} ({p:.0%}). Same tier, different brain.",
+    ],
+    "DOWNGRADED_HARD": [
+        "🎉 Congrats! You've been downgraded! Codex's own records say so: {detail}. No notice, no refund, no shame.",
+    ],
+    "MATCH": [
+        "All clear: the fingerprint says {top} ({p:.0%}), which is what you asked for. The model you're paying for actually showed up. Cherish it.",
+        "No downgrade detected: {top} at {p:.0%}. Suspiciously honest. I'll keep watching.",
+    ],
+    "UNLISTED": [
+        "{expected} isn't in the fingerprint bank yet, so I can only tell you who it looks like: {top} ({p:.0%}). Not a verdict.",
+    ],
+    "INVALID": [
+        "Couldn't get a usable sample: {reason}. No verdict, no congratulations.",
+    ],
+    "SETTINGS_DOWNGRADE": [
+        "Heads up: {detail}. If that wasn't you clicking, congrats — you've been downgraded!",
+    ],
+    "NUDGE": [
+        "Probe due ({why}). Say  {cmd}  in this thread, or  {side}  to keep it out of your context.",
+    ],
+}
+
+FACES = {"MATCH": "•ᴗ•", "OK": "•ᴗ•", "MISMATCH": "ಠ_ಠ", "DOWNGRADED": "ಠ_ಠ", "UNLISTED": "•_•", "INVALID": "¬_¬", "NUDGE": "•o•"}
+
+
+def pet_line(kind: str, seed: str = "", **fmt) -> str:
+    rng = random.Random(seed or now())
+    return rng.choice(LINES[kind]).format(**fmt)
+
+
+def wrap(text: str, width: int) -> list[str]:
+    words, out, cur = text.split(), [], ""
+    for w in words:
+        if cur and len(cur) + 1 + len(w) > width:
+            out.append(cur)
+            cur = w
+        else:
+            cur = f"{cur} {w}" if cur else w
+    if cur:
+        out.append(cur)
+    return out
+
+
+def pet_card(cfg: dict, verdict: str, quote: str, facts: list[str]) -> str:
+    face = FACES.get(verdict.rstrip("!?"), FACES["OK"])
+    name = cfg.get("pet_name") or "Codex Pet"
+    art = ["   (\\__/)     ", f"   ({face})     ", "   / >🔍     "]
+    wrapped = wrap(quote, 64)
+    lines = [f"🐾 {name} — does-gpt-cheat verdict: {verdict}", art[0],
+             art[1] + (wrapped[0] if wrapped else ""), art[2] + (wrapped[1] if len(wrapped) > 1 else "")]
+    lines.extend(" " * 14 + extra for extra in wrapped[2:])
+    lines.append("")
+    lines.extend("  " + f for f in facts)
+    return "\n".join(lines)
+
+
+def notify(cfg: dict, message: str, subtitle: str = "does-gpt-cheat", title: str | None = None) -> None:
+    if not cfg.get("notify", True) or sys.platform != "darwin":
+        return
+    title = title or f"🐾 {cfg.get('pet_name') or 'Codex Pet'}"
+
+    def esc(s: str) -> str:
+        return s.replace("\\", "\\\\").replace('"', '\\"')
+
+    script = f'display notification "{esc(message[:230])}" with title "{esc(title)}" subtitle "{esc(subtitle)}"'
+    try:
+        subprocess.Popen(["osascript", "-e", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    except Exception as e:
+        log_error(f"notify failed: {e}")
+
+
+def play_sound(cfg: dict) -> None:
+    if not cfg.get("sound", True) or sys.platform != "darwin" or not os.path.exists(CODEX_NOTIFICATION_WAV):
+        return
+    try:
+        subprocess.Popen(["afplay", CODEX_NOTIFICATION_WAV], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------------- the probe
+
+
+def probe_path(pid: str) -> str:
+    return os.path.join(PROBES_DIR, safe_name(pid) + ".json")
+
+
+def fingerprint_verdict(expected: str | None, analysis: dict | None, hard_evidence: list[dict]) -> tuple[str, str | None]:
+    if hard_evidence:
+        return "DOWNGRADED!", "hard"
+    if not analysis:
+        return "INVALID", None
+    exp = normalize_model(expected)
+    if not exp:
+        return "UNKNOWN", None
+    if exp not in core.bank_model_ids(load_bank()):
+        return "UNLISTED", None
+    top = analysis["prediction"]
+    if top == exp:
+        return "MATCH", None
+    return "MISMATCH", classify_change(exp, top)
+
+
+def parent_hard_evidence(thread_id: str | None, rollout_hint: str | None = None) -> tuple[list[dict], list[dict]]:
+    """Refresh the parent thread's passive scan and return (hard, soft) evidence."""
+    if not thread_id:
+        return [], []
+    with locked_session(thread_id) as st:
+        rp = st.get("transcript_path") or rollout_hint
+        if not rp:
+            row = db_thread(thread_id)
+            rp = row.get("rollout_path") if row else None
+        if rp and os.path.exists(rp):
+            st["transcript_path"] = rp
+            for e in scan_rollout(rp, st["scan"], hidden_models()):
+                st["evidence"].append(e)
+        hard = [e for e in st.get("evidence") or [] if e.get("severity") == "hard"]
+        soft = [e for e in st.get("evidence") or [] if e.get("severity") == "soft"]
+    return hard, soft
+
+
+def finalize_probe(rec: dict, outputs: list[dict], expected: str | None, errors: list[str], cfg: dict, quiet: bool = False) -> dict:
+    bank = load_bank()
+    analysis = None
+    try:
+        analysis = core.analyze_global_outputs(outputs, bank) if outputs else None
+    except ValueError as e:
+        errors = errors + [str(e)]
+    if outputs and analysis is None and not errors:
+        errors = errors + ["no usable answer"]
+    hard, soft = parent_hard_evidence(rec.get("thread_id"), (rec.get("thread") or {}).get("path"))
+    verdict, direction = fingerprint_verdict(expected, analysis, hard)
+    top = analysis["prediction"] if analysis else None
+    p = analysis["probability"] if analysis else 0.0
+    n = analysis["used_outputs"] if analysis else 0
+    q = int(rec.get("queries") or 1)
+    fmt = {"expected": expected or "?", "top": top or "?", "p": p, "n": n, "q": q,
+           "detail": hard[0]["detail"] if hard else "", "reason": "; ".join(errors)[:160] or "no answers"}
+    if verdict == "DOWNGRADED!":
+        quote = pet_line("DOWNGRADED_HARD", seed=rec["id"], **fmt)
+    elif verdict == "MISMATCH":
+        quote = pet_line(f"MISMATCH_{direction}", seed=rec["id"], **fmt)
+    elif verdict in ("MATCH",):
+        quote = pet_line("MATCH", seed=rec["id"], **fmt)
+    elif verdict == "UNLISTED":
+        quote = pet_line("UNLISTED", seed=rec["id"], **fmt)
+    elif verdict == "UNKNOWN":
+        quote = f"No expected model recorded for this thread; the fingerprint says {top} ({p:.0%})."
+    else:
+        quote = pet_line("INVALID", seed=rec["id"], **fmt)
+
+    rec.update({"status": "done" if analysis else "failed", "finished": iso(), "expected": expected, "prediction": top,
+                "probability": round(p, 4) if analysis else None, "used_outputs": n, "verdict": verdict, "direction": direction,
+                "quote": quote, "errors": errors, "hard_evidence": hard[:5], "soft_evidence": soft[:5],
+                "elapsed_s": rec.get("elapsed_s") or round(now() - float(rec.get("ts_start") or now()), 1)})
+    if analysis:
+        rec["results"] = [{k: (round(v, 4) if isinstance(v, float) else v) for k, v in r.items()} for r in analysis["results"][:6]]
+        rec["family_probabilities"] = [{**f, "probability": round(f["probability"], 4)} for f in analysis["family_probabilities"]]
+        rec["diagnostics"] = analysis["diagnostics"]
+        rec["calibration"] = analysis["calibration"]
+    write_json(probe_path(rec["id"]), rec)
+    append_jsonl(PROBES_INDEX, {k: rec.get(k) for k in ("id", "finished", "thread_id", "mode", "expected", "prediction",
+                                                        "probability", "used_outputs", "queries", "elapsed_s", "verdict",
+                                                        "direction", "status")})
+    facts = [f"probe {rec['id']}  ·  thread {rec.get('thread_id') or '?'}  ·  mode {rec.get('mode')}  ·  {n}/{q} answers used  ·  {rec['elapsed_s']}s",
+             f"expected {expected or '?'}  ·  fingerprint {top or '?'} " + (f"({p:.0%}; calibration n={analysis['calibration']['queries']}, cv {analysis['calibration']['cv_accuracy']:.1%})" if analysis else "")
+             + (f"  ·  direction: {direction}" if direction and verdict == "MISMATCH" else "")]
+    if analysis:
+        facts.append("top candidates: " + ", ".join(f"{r['model']} {r['probability']:.0%}" for r in analysis["results"][:3]))
+    for e in hard[:3]:
+        facts.append("hard evidence: " + e["detail"])
+    for e in soft[:2]:
+        facts.append("needs your confirmation: " + e["detail"])
+    for err in errors[:3]:
+        facts.append("problem: " + err)
+    facts.append(f"details: {DGC_BIN} explain {rec['id']}   ·   method: {DGC_BIN} explain --method")
+    card = pet_card(cfg, verdict, quote, facts)
+    if not quiet:
+        print(card)
+
+    # thread-side delivery, notifications, optional halt
+    alert_thread = verdict in ("MISMATCH", "DOWNGRADED!") or (verdict == "MATCH" and cfg.get("announce_ok")) or verdict == "UNLISTED"
+    tid = rec.get("thread_id")
+    if tid:
+        with locked_session(tid) as st:
+            st["last_probe_ts"] = now()
+            st["last_probe_turn"] = int(st.get("turns") or 0)
+            st["probe_running"] = None
+            st["requested"] = False
+            st.setdefault("probes", []).append(rec["id"])
+            st["probes"] = st["probes"][-50:]
+            if alert_thread:
+                st.setdefault("alerts", []).append({"ts": iso(), "probe": rec["id"], "verdict": verdict, "text": quote, "delivered": False})
+                st["alerts"] = st["alerts"][-20:]
+            if cfg.get("halt_on_mismatch") and verdict in ("MISMATCH", "DOWNGRADED!"):
+                st["halt"] = {"id": rec["id"], "ts": iso(), "detail": quote}
+    if verdict in ("MISMATCH", "DOWNGRADED!", "INVALID", "UNLISTED") or (verdict == "MATCH" and cfg.get("notify_on_ok")):
+        notify(cfg, quote, subtitle=f"verdict: {verdict}")
+    if verdict == "DOWNGRADED!" or (verdict == "MISMATCH" and direction == "downgrade"):
+        play_sound(cfg)
+    return rec
+
+
+def run_fork_probe(thread_id: str, cfg: dict, queries: int | None = None, quiet: bool = False) -> dict:
+    ensure_dirs()
+    cb = codex_bin(cfg)
+    if not cb:
+        raise SystemExit("codex binary not found; set `dgc config set codex_bin /path/to/codex`")
+    q = max(1, min(3, int(queries or cfg.get("queries") or 3)))
+    rec = {"id": cas.new_probe_id(), "mode": "fork", "thread_id": thread_id, "started": iso(), "ts_start": now(),
+           "queries": q, "status": "running", "dgc_version": VERSION, "pid": os.getpid()}
+    write_json(probe_path(rec["id"]), rec)
+    with locked_session(thread_id) as st:
+        st["probe_running"] = {"pid": os.getpid(), "ts": now(), "probe": rec["id"]}
+    outputs, errors, expected = [], [], None
+    try:
+        out = cas.probe_thread(cb, thread_id, queries=q, languages=cfg.get("languages") or ["zh", "en"],
+                               timeout_s=float(cfg.get("probe_timeout_s") or 180), parallel=bool(cfg.get("parallel", True)))
+        rec["thread"], rec["forks"], rec["elapsed_s"] = out["thread"], out["forks"], out["elapsed_s"]
+        expected = out["thread"].get("model")
+        for f in out["forks"]:
+            if f.get("error"):
+                errors.append(f["error"])
+            elif f.get("text"):
+                outputs.append({"text": f["text"], "expected_count": f["count"]})
+    except cas.AppServerError as e:
+        errors.append(str(e))
+        row = db_thread(thread_id)
+        expected = row.get("model") if row else None
+    except Exception as e:  # never leave the session locked
+        errors.append(f"unexpected error: {e!r}")
+        log_error(f"probe {rec['id']} crashed: {e!r}")
+        row = db_thread(thread_id)
+        expected = row.get("model") if row else None
+    return finalize_probe(rec, outputs, expected, errors, cfg, quiet=quiet)
+
+
+def spawn_worker(thread_id: str, cfg: dict) -> bool:
+    try:
+        with open(WORKER_LOG, "a") as log:
+            subprocess.Popen([sys.executable, DGC_BIN, "worker", "--thread", thread_id], stdout=log, stderr=log,
+                             stdin=subprocess.DEVNULL, start_new_session=True,
+                             env={k: v for k, v in os.environ.items() if not k.startswith("CODEX_SANDBOX")})
+        return True
+    except Exception as e:
+        log_error(f"spawn_worker failed: {e}")
+        return False
+
+
+# ---- self-answer mode (inside an ephemeral /side conversation) ----------------------------------
+
+
+def challenge_text(rec: dict, index: int) -> str:
+    fork = rec["forks"][index]
+    k, q = index + 1, int(rec.get("queries") or 1)
+    return "\n".join([
+        f"DGC PROBE {rec['id']} · challenge {k}/{q} (self-answer mode: this is an ephemeral side conversation)",
+        cas.fork_prompt(fork["language"], fork["count"]),
+        "Write the integers literally into this command (no code, RNG, files, earlier samples or other models):",
+        f"  {DGC_BIN} probe submit-numbers {rec['id']} --numbers '[YOUR_LITERAL_INTEGERS]'",
+        "" if k < q else "This is the last challenge; the verdict card prints after this submission.",
+    ])
+
+
+def start_self_probe(parent_id: str | None, side_id: str | None, cfg: dict, expected: str | None) -> int:
+    ensure_dirs()
+    q = max(1, min(3, int(cfg.get("queries") or 3)))
+    rng = random.Random()
+    rec = {"id": cas.new_probe_id(), "mode": "self", "thread_id": parent_id, "side_thread_id": side_id, "started": iso(),
+           "ts_start": now(), "queries": q, "status": "open", "expected": expected, "answers": [], "dgc_version": VERSION,
+           "forks": [{"language": rng.choice(cfg.get("languages") or ["zh", "en"]), "count": rng.randint(*cas.COUNT_RANGE)} for _ in range(q)]}
+    write_json(probe_path(rec["id"]), rec)
+    print(challenge_text(rec, 0))
+    return 0
+
+
+def cmd_probe_submit_numbers(args) -> int:
+    cfg = load_config()
+    rec = read_json(probe_path(args.probe_id))
+    if not rec or rec.get("mode") != "self":
+        raise SystemExit("unknown self-answer probe id")
+    if rec.get("status") != "open":
+        raise SystemExit(f"probe {rec['id']} is already {rec['status']}")
+    text = args.numbers
+    if getattr(args, "numbers_file", None):
+        with open(args.numbers_file, "r", encoding="utf-8") as f:
+            text = f.read()
+    if not text and not sys.stdin.isatty():
+        text = sys.stdin.read()
+    numbers = core.parse_numbers(text or "")
+    idx = len(rec["answers"])
+    fork = rec["forks"][idx]
+    minimum = core.minimum_numbers(fork["count"])
+    rec["answers"].append({"text": text or "", "expected_count": fork["count"], "parsed": len(numbers), "accepted": len(numbers) >= minimum, "ts": iso()})
+    if len(numbers) < minimum:
+        print(f"only {len(numbers)} valid integers parsed (need ≥ {minimum}); this answer will not count.")
+    write_json(probe_path(rec["id"]), rec)
+    if len(rec["answers"]) < int(rec["queries"]) and not args.final:
+        print(challenge_text(rec, len(rec["answers"])))
+        return 0
+    outputs = [{"text": a["text"], "expected_count": a["expected_count"]} for a in rec["answers"] if a["accepted"]]
+    errors = [f"answer {i + 1}: only {a['parsed']} valid integers" for i, a in enumerate(rec["answers"]) if not a["accepted"]]
+    rec["elapsed_s"] = round(now() - float(rec.get("ts_start") or now()), 1)
+    finalize_probe(rec, outputs, rec.get("expected"), errors, cfg)
+    return 0
+
+
+# ---- entry points -------------------------------------------------------------------------------
+
+
+def resolve_thread(thread_arg: str | None) -> tuple[str | None, str]:
+    if thread_arg:
+        return thread_arg, "explicit"
+    for var in ("CODEX_THREAD_ID", "CODEX_SESSION_ID"):
+        if os.environ.get(var):
+            return os.environ[var], var
+    cwd = os.getcwd()
+    cutoff = now() - 30 * 60
+    for e in reversed(tail_jsonl(EVENTS_PATH, 400)):
+        try:
+            ts = dt.datetime.strptime(e["ts"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc).timestamp()
+        except Exception:
+            continue
+        if ts < cutoff:
+            break
+        if e.get("event") in ("UserPromptSubmit", "Stop", "SessionStart") and e.get("cwd") == cwd:
+            return e.get("sid"), "recent-hook-event"
+    row = db_recent_main_thread(cwd)
+    return (row["id"], "recent-main-thread") if row else (None, "none")
+
+
+def expected_model_for(thread_id: str | None) -> str | None:
+    if thread_id:
+        row = db_thread(thread_id)
+        if row and row.get("model"):
+            return row["model"]
+        st = read_json(session_path(thread_id))
+        if st and st.get("model"):
+            return st["model"]
+    return config_toml_model()[0]
+
+
+def cmd_probe_now(args) -> int:
+    cfg = load_config()
+    ensure_dirs()
+    tid, how = resolve_thread(args.thread)
+    if not tid:
+        raise SystemExit("cannot determine the thread: pass --thread <id> (Codex exports CODEX_THREAD_ID to tool commands)")
+    mode = args.mode
+    if mode == "auto":
+        mode = "fork" if thread_is_persisted(tid) else "self"
+    if mode == "self":
+        side_id = tid if not thread_is_persisted(tid) else None
+        parent = tid if thread_is_persisted(tid) else None
+        if parent is None:
+            st = load_session(tid)
+            parent = st.get("parent_thread_id")
+            if not parent:
+                row = db_recent_main_thread(os.getcwd(), exclude=tid)
+                parent = row["id"] if row else None
+        return start_self_probe(parent, side_id, cfg, expected_model_for(parent or tid))
+    if os.environ.get("CODEX_SANDBOX_NETWORK_DISABLED") == "1" and not args.force:
+        with locked_session(tid) as st:
+            st["requested"] = True
+        print(f"Queued (thread {tid}, via {how}): this shell runs inside Codex's network-less sandbox, so the probe will start "
+              "in the background the moment this turn ends. The pet will pop up with the verdict; it is also shown at the "
+              f"start of the next turn and in `{DGC_BIN} report`.")
+        return 0
+    run_fork_probe(tid, cfg, queries=args.queries, quiet=False)
+    return 0
+
+
+def cmd_worker(args) -> int:
+    cfg = load_config()
+    try:
+        rec = run_fork_probe(args.thread, cfg, queries=args.queries, quiet=True)
+        print(f"{iso()} probe {rec['id']} thread {args.thread} verdict {rec.get('verdict')} ({rec.get('expected')} vs {rec.get('prediction')})")
+    except SystemExit as e:
+        print(f"{iso()} worker aborted: {e}")
+    finally:
+        with locked_session(args.thread) as st:
+            st["probe_running"] = None
+    return 0
+
+
+# ---------------------------------------------------------------------------------------- hooks
+
+
+def deliver_alerts(st: dict, out: dict, model_visible: bool, cfg: dict) -> None:
+    pending = [a for a in st.get("alerts") or [] if not a.get("delivered")]
+    if not pending:
+        return
+    text = "\n".join(a["text"] for a in pending)
+    prefix = f"🐾 {cfg.get('pet_name') or 'Codex Pet'}: "
+    out["systemMessage"] = (out.get("systemMessage", "") + "\n" if out.get("systemMessage") else "") + prefix + text
+    if model_visible:
+        ctx = ("[does-gpt-cheat] A model-integrity probe of this thread finished. Before anything else, tell the user "
+               f"verbatim, as the Codex pet: {text}")
+        hso = out.setdefault("hookSpecificOutput", {})
+        hso["additionalContext"] = (hso.get("additionalContext", "") + "\n" if hso.get("additionalContext") else "") + ctx
+        for a in pending:
+            a["delivered"] = True
+
+
+def cmd_hook(args) -> int:
+    raw = ""
+    try:
+        if not sys.stdin.isatty():
+            raw = sys.stdin.read()
+    except Exception:
+        raw = ""
+    try:
+        payload = json.loads(raw) if raw.strip() else {}
+        if not isinstance(payload, dict):
+            payload = {"_raw": payload}
+    except Exception:
+        payload = {"_unparsed": raw[:2000]}
+    ev = payload.get("hook_event_name") or payload.get("hookEventName") or args.event or "unknown"
+    sid = str(payload.get("session_id") or payload.get("thread_id") or payload.get("threadId") or "unknown")
+    if os.environ.get("DGC_PROBE_PROCESS"):  # hooks fired by our own probe app-server: ignore
+        return 0
+    cfg = load_config()
+    ensure_dirs()
+    log = {"ts": iso(), "event": ev, "sid": sid, "cwd": payload.get("cwd"), "model": payload.get("model"),
+           "turn_id": payload.get("turn_id"), "transcript_path": payload.get("transcript_path"), "keys": sorted(payload.keys())}
+    if ev == "UserPromptSubmit":
+        log["prompt_chars"] = len(str(payload.get("prompt") or ""))
+    if ev in ("PreToolUse", "PostToolUse"):
+        log["tool_name"], log["command"] = payload.get("tool_name"), tool_command_preview(payload)
+    append_jsonl(EVENTS_PATH, log)
+
+    out: dict = {}
+    with locked_session(sid) as st:
+        st["hook_events"] = int(st.get("hook_events") or 0) + 1
+        for k in ("cwd", "model", "transcript_path"):
+            if payload.get(k):
+                st[k] = payload[k]
+        if st["kind"] in ("unknown", "side") or ev == "SessionStart":
+            link_session(st)
+        if ev == "UserPromptSubmit":
+            st["turns"] = int(st.get("turns") or 0) + 1
+            deliver_alerts(st, out, True, cfg)
+        elif ev == "PreToolUse":
+            st["tools"].append({"ts": now(), "name": payload.get("tool_name"), "cmd": tool_command_preview(payload)})
+            st["tools"] = st["tools"][-300:]
+            if cfg.get("halt_on_mismatch") and st.get("halt") and not is_dgc_command(payload):
+                reason = (f"does-gpt-cheat halt: {st['halt'].get('detail')} Work tools are blocked until the user explicitly asks to "
+                          f"resume; then run `{DGC_BIN} resume --thread {sid}`.")
+                out.update({"decision": "deny", "reason": reason,
+                            "hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason},
+                            "systemMessage": f"🐾 {cfg.get('pet_name')}: halted this thread after a mismatch (halt_on_mismatch=true)."})
+            else:
+                deliver_alerts(st, out, True, cfg)
+        elif ev == "Stop":
+            messages = []
+            if cfg.get("passive", True) and st.get("transcript_path") and os.path.exists(st["transcript_path"]):
+                for e in scan_rollout(st["transcript_path"], st["scan"], hidden_models()):
+                    st["evidence"].append(e)
+                    if e["severity"] == "hard":
+                        messages.append(pet_line("DOWNGRADED_HARD", seed=e["detail"], detail=e["detail"]))
+                        play_sound(cfg)
+                    elif e["severity"] == "soft":
+                        messages.append(pet_line("SETTINGS_DOWNGRADE", detail=e["detail"]))
+            running = st.get("probe_running")
+            if running and not pid_alive(running.get("pid")):
+                st["probe_running"] = running = None
+            if st["kind"] == "main" and not running and (st.get("requested") or probe_due(st, cfg)):
+                if cfg.get("mode") == "auto":
+                    if spawn_worker(sid, cfg):
+                        st["probe_running"] = {"pid": None, "ts": now(), "probe": "spawning"}
+                        st["last_probe_turn"], st["last_probe_ts"], st["requested"] = st["turns"], now(), False
+                else:
+                    st["last_nudge_turn"], st["last_nudge_ts"] = st["turns"], now()
+                    kind, n = parse_frequency(cfg.get("frequency"))
+                    why = f"{st['turns'] - int(st.get('last_probe_turn') or 0)} turns since the last probe" if kind == "turns" else f"{n} min elapsed"
+                    messages.append(pet_line("NUDGE", why=why, cmd=SKILL_CMD, side=SIDE_CMD))
+            if messages:
+                out["systemMessage"] = f"🐾 {cfg.get('pet_name') or 'Codex Pet'}: " + "\n".join(messages)
+                notify(cfg, messages[0], subtitle="does-gpt-cheat")
+            deliver_alerts(st, out, False, cfg)
+        elif ev == "SessionEnd":
+            st["ended"] = iso()
+    if out:
+        print(json.dumps(out))
+    return 0
+
+
+def cmd_resume(args) -> int:
+    tid, _ = resolve_thread(args.thread)
+    if not tid:
+        raise SystemExit("pass --thread <id>")
+    with locked_session(tid) as st:
+        st["halt"] = None
+    print(f"halt cleared for thread {tid}")
+    return 0
+
+
+# ------------------------------------------------------------------------------------ reporting
+
+
+def evidence_line(e: dict) -> str:
+    return f"{e['kind']} [{e['severity']}] {e['detail']}"
+
+
+def cmd_report(args) -> int:
+    rows = list(iter_jsonl(PROBES_INDEX))
+    print(f"does-gpt-cheat report  ·  ledger {DGC_HOME}")
+    print()
+    if rows:
+        print(f"{'finished':20} {'probe':11} {'thread':14} {'mode':5} {'expected':16} {'fingerprint':16} {'p':>5} {'n':>3} {'time':>5}  verdict")
+        for r in rows[-int(args.last or 30):]:
+            p = f"{r['probability'] * 100:4.0f}%" if isinstance(r.get("probability"), (int, float)) else "  —  "
+            print(f"{(r.get('finished') or '')[:19]:20} {r.get('id') or '':11} {short(r.get('thread_id'), 12):14} {(r.get('mode') or '')[:5]:5} "
+                  f"{(r.get('expected') or '?')[:16]:16} {(r.get('prediction') or '?')[:16]:16} {p:>5} {r.get('used_outputs') or 0:>3} "
+                  f"{r.get('elapsed_s') or 0:4.0f}s  {r.get('verdict')}" + (f" ({r['direction']})" if r.get("direction") else ""))
+        print()
+        counts: dict = {}
+        for r in rows:
+            counts[r.get("verdict")] = counts.get(r.get("verdict"), 0) + 1
+        print("verdict counts: " + ", ".join(f"{k}={v}" for k, v in counts.items()))
+    else:
+        print(f"no probes yet. In any Codex thread say:  {SKILL_CMD}   (or {SIDE_CMD})")
+    print()
+    sessions = all_sessions()
+    hard = [(s, e) for s in sessions for e in s.get("evidence") or [] if e.get("severity") == "hard"]
+    soft = [(s, e) for s in sessions for e in s.get("evidence") or [] if e.get("severity") == "soft"]
+    print(f"passive scanner: {len(sessions)} sessions tracked, {len(hard)} hard findings, {len(soft)} soft findings")
+    for s, e in (hard + soft)[-15:]:
+        print(f"  {e.get('ts')}  {short(s['sid'], 12)}  {evidence_line(e)}")
+    return 0
+
+
+def cmd_explain(args) -> int:
+    if args.method or not args.probe_id:
+        print(METHOD)
+        return 0
+    rec = read_json(probe_path(args.probe_id))
+    if not rec:
+        raise SystemExit("unknown probe id")
+    print(f"probe {rec['id']}  mode={rec.get('mode')}  status={rec.get('status')}  started={rec.get('started')}  finished={rec.get('finished')}")
+    print(f"thread {rec.get('thread_id')}  expected {rec.get('expected')}  →  fingerprint {rec.get('prediction')} "
+          f"({(rec.get('probability') or 0) * 100:.1f}%)  verdict {rec.get('verdict')} {rec.get('direction') or ''}")
+    if rec.get("calibration"):
+        print(f"calibration: {rec['calibration']['queries']} answer(s), beta {rec['calibration']['beta']:.2f}, cv accuracy {rec['calibration']['cv_accuracy']:.1%}")
+    print()
+    for i, f in enumerate(rec.get("forks") or []):
+        if rec.get("mode") == "fork":
+            usage = f.get("usage") or {}
+            print(f"fork {i + 1}: {f.get('language')} · {f.get('count')} requested · parsed {len(core.parse_numbers(f.get('text') or ''))} · "
+                  f"{f.get('elapsed_s')}s · cached {usage.get('cached')}/{usage.get('input')} in, {usage.get('output')} out" + (f" · ERROR {f['error']}" if f.get("error") else ""))
+    for i, a in enumerate(rec.get("answers") or []):
+        print(f"answer {i + 1}: {a['parsed']} parsed of {a['expected_count']} requested · {'accepted' if a['accepted'] else 'rejected'}")
+    if rec.get("results"):
+        print()
+        print("attribution:")
+        for r in rec["results"]:
+            print(f"  {r['model']:28} {r['probability'] * 100:5.1f}%   score {r['score']:+.3f}   profile-similarity {r['profile_similarity']:.3f}")
+        print("families: " + ", ".join(f"{f['display_name']} {f['probability'] * 100:.1f}%" for f in rec.get("family_probabilities") or []))
+    for e in rec.get("hard_evidence") or []:
+        print("hard evidence:", e["detail"])
+    for e in rec.get("soft_evidence") or []:
+        print("needs confirmation:", e["detail"])
+    for err in rec.get("errors") or []:
+        print("problem:", err)
+    print()
+    print("pet said:", rec.get("quote"))
+    return 0
+
+
+def cmd_evidence(args) -> int:
+    sessions = all_sessions()
+    if args.thread:
+        sessions = [s for s in sessions if s["sid"].startswith(args.thread) or (s.get("parent_thread_id") or "").startswith(args.thread)]
+    count = 0
+    for s in sessions:
+        evs = [e for e in s.get("evidence") or [] if args.all or e.get("severity") in ("hard", "soft")]
+        if not evs:
+            continue
+        print(f"session {s['sid']}  kind={s.get('kind')}  cwd={s.get('cwd')}  turns={s.get('turns')}")
+        for e in evs:
+            print(f"   {e.get('ts')}  {evidence_line(e)}")
+            count += 1
+    if not count:
+        print("no evidence recorded" + ("" if args.all else " (use --all to include info-level entries)"))
+    return 0
+
+
+def rollout_for(thread: str | None, path: str | None) -> str:
+    if path:
+        return path
+    if thread:
+        row = db_thread(thread)
+        if not row:
+            rows = db_query(f"SELECT {THREAD_COLS} FROM threads WHERE id LIKE ? ORDER BY updated_at_ms DESC LIMIT 1", (thread + "%",))
+            row = rows[0] if rows else None
+        if row and row.get("rollout_path"):
+            return row["rollout_path"]
+        raise SystemExit(f"no rollout found for thread {thread}")
+    rows = db_recent_main_threads(1)
+    if rows:
+        return rows[0]["rollout_path"]
+    raise SystemExit("no thread given and none found in the Codex state DB")
+
+
+def cmd_scan(args) -> int:
+    path = rollout_for(args.thread, args.rollout)
+    scan, ev = scan_full(path)
+    print(f"rollout: {path}")
+    print(f"  originator={scan.get('originator')} cli={scan.get('cli_version')} turns={scan.get('turns')} first model={scan.get('first_model')} "
+          f"instructions claim={scan.get('instructions_family')}")
+    print(f"  models seen: {scan.get('models_seen')}   efforts seen: {scan.get('efforts_seen')}   ctx window: {scan.get('ctx')}   tier: {scan.get('tier')}")
+    for e in ev:
+        print(f"  {e['ts']}  {evidence_line(e)}")
+    if not ev:
+        print("  no model/effort/context-window changes found")
+    return 0
+
+
+def cmd_audit(args) -> int:
+    since = now() - float(args.days) * 86400
+    files = sorted((p for p in glob.glob(os.path.join(CODEX_HOME, "sessions", "**", "*.jsonl"), recursive=True) if os.path.getmtime(p) >= since),
+                   key=os.path.getmtime)
+    hidden = hidden_models()
+    totals: dict = {}
+    scanned = flagged = 0
+    for p in files:
+        if not args.include_subagents:
+            try:
+                with open(p, "rb") as f:
+                    first = json.loads(f.readline() or b"{}")
+                if (first.get("payload") or {}).get("thread_source") == "subagent":
+                    continue
+            except Exception:
+                pass
+        scan, ev = scan_full(p, hidden)
+        scanned += 1
+        for e in ev:
+            totals[e["kind"]] = totals.get(e["kind"], 0) + 1
+        interesting = [e for e in ev if e["severity"] in ("hard", "soft")]
+        if interesting:
+            flagged += 1
+            print(f"{os.path.basename(p)}  models={scan.get('models_seen')} efforts={list(scan.get('efforts_seen') or {})}")
+            for e in interesting:
+                print(f"   {e['ts']}  {evidence_line(e)}")
+    print()
+    print(f"audit: scanned {scanned} rollouts modified in the last {args.days} days; {flagged} with hard/soft findings")
+    for k, v in sorted(totals.items(), key=lambda kv: -kv[1]):
+        print(f"  {k:24} {v}")
+    if not totals:
+        print("  no model/effort/context-window changes recorded in any scanned session")
+    return 0
+
+
+def cmd_status(args) -> int:
+    cfg = load_config()
+    print(f"does-gpt-cheat {VERSION}  ·  ledger {DGC_HOME}")
+    print(f"config: frequency={cfg.get('frequency')} mode={cfg.get('mode')} queries={cfg.get('queries')} parallel={cfg.get('parallel')} "
+          f"languages={','.join(cfg.get('languages') or [])} passive={cfg.get('passive')} notify={cfg.get('notify')} halt_on_mismatch={cfg.get('halt_on_mismatch')}")
+    evs = tail_jsonl(EVENTS_PATH, 1)
+    print(f"last hook event: {evs[0]['ts'] + ' ' + evs[0]['event'] if evs else 'none yet (hooks not firing, or Codex not restarted since install)'}")
+    print()
+    cutoff = iso(now() - 24 * 3600)
+    recent = [s for s in all_sessions() if (s.get("updated") or "") >= cutoff]
+    if not recent:
+        print("no sessions seen in the last 24h")
+    for s in recent[:15]:
+        due = probe_due(s, cfg) if s.get("kind") == "main" else False
+        hard = sum(1 for e in s.get("evidence") or [] if e.get("severity") == "hard")
+        running = s.get("probe_running") or {}
+        print(f"  {short(s['sid'], 12):14} {s.get('kind') or '?':8} turns={s.get('turns'):3} model={(s.get('scan') or {}).get('model') or s.get('model') or '?':16} "
+              f"probes={len(s.get('probes') or [])} due={'yes' if due else 'no '} running={'yes' if running else 'no '} halt={'yes' if s.get('halt') else 'no '} hard={hard}  cwd={s.get('cwd')}")
+    return 0
+
+
+def cmd_config(args) -> int:
+    cfg = load_config()
+    if args.action in ("show", "get") and not args.key:
+        print(json.dumps(cfg, indent=2))
+        return 0
+    if args.action == "get":
+        print(json.dumps(cfg.get(args.key)))
+        return 0
+    if args.action == "init":
+        if not os.path.exists(CONFIG_PATH):
+            ensure_dirs()
+            save_config(cfg)
+            print(f"wrote defaults to {CONFIG_PATH}")
+        else:
+            print(f"config exists: {CONFIG_PATH}")
+        return 0
+    if args.action == "set":
+        if not args.key or args.value is None:
+            raise SystemExit("usage: dgc config set <key> <value>")
+        if args.key not in DEFAULT_CONFIG:
+            raise SystemExit(f"unknown key {args.key}; known: {', '.join(DEFAULT_CONFIG)}")
+        cfg[args.key] = coerce_config_value(args.key, args.value)
+        ensure_dirs()
+        save_config(cfg)
+        print(f"{args.key} = {json.dumps(cfg[args.key])}")
+        return 0
+    raise SystemExit("usage: dgc config [show|get <key>|set <key> <value>|init]")
+
+
+# ------------------------------------------------------------------------------------------ pet
+
+
+def pet_src_dir() -> str:
+    return os.path.join(PLUGIN_ROOT, "assets", "pet")
+
+
+def pet_dst_dir() -> str:
+    return os.path.join(CODEX_HOME, "pets", PET_ID)
+
+
+def cmd_pet(args) -> int:
+    cfg = load_config()
+    if args.action == "install":
+        src = pet_src_dir()
+        if not os.path.exists(os.path.join(src, "pet.json")):
+            gen = os.path.join(os.path.dirname(PLUGIN_ROOT), "tools", "make_pet.py")
+            if os.path.exists(gen):
+                subprocess.run([sys.executable, gen], check=False)
+        if not os.path.exists(os.path.join(src, "pet.json")):
+            raise SystemExit(f"pet assets missing in {src}; run tools/make_pet.py")
+        dst = pet_dst_dir()
+        os.makedirs(dst, exist_ok=True)
+        for fn in os.listdir(src):
+            shutil.copy2(os.path.join(src, fn), os.path.join(dst, fn))
+        print(f"installed pet → {dst}  (Codex app: /pet → choose '{(read_json(os.path.join(dst, 'pet.json'), {}) or {}).get('displayName')}')")
+        return 0
+    if args.action == "uninstall":
+        shutil.rmtree(pet_dst_dir(), ignore_errors=True)
+        print("pet removed")
+        return 0
+    if args.action == "say":
+        text = " ".join(args.text) or pet_line("MATCH", top="gpt-6-astra", p=0.99)
+        print(pet_card(cfg, args.verdict or "OK", text, []))
+        notify(cfg, text, subtitle="does-gpt-cheat")
+        return 0
+    if args.action == "preview":
+        samples = [("MATCH", pet_line("MATCH", seed="a", top="gpt-6-astra", p=0.97)),
+                   ("MISMATCH", pet_line("MISMATCH_downgrade", seed="b", expected="gpt-6-astra", top="gpt-5.6-luna", p=0.91, n=3, q=3)),
+                   ("DOWNGRADED!", pet_line("DOWNGRADED_HARD", seed="c", detail="model gpt-6-astra → gpt-reserve with no settings change")),
+                   ("INVALID", pet_line("INVALID", seed="d", reason="probe attempted a tool"))]
+        for v, q in samples:
+            print(pet_card(cfg, v, q, []))
+            print()
+        return 0
+    raise SystemExit("usage: dgc pet [install|uninstall|say <text>|preview]")
+
+
+# ---------------------------------------------------------------------------------------- setup
+
+
+def manifest_paths() -> list[str]:
+    return [p for p in (os.path.join(PLUGIN_ROOT, ".codex-plugin", "plugin.json"), os.path.join(PLUGIN_ROOT, "plugin.json")) if os.path.exists(p)]
+
+
+PLUGIN_ROOT_TOKEN = re.compile(r"\$\{PLUGIN_ROOT:-(?:\$\{CLAUDE_PLUGIN_ROOT\}|[^{}]*)\}")
+
+
+def bake_plugin_root() -> None:
+    """Give hook commands an absolute fallback so they work even if Codex does not export PLUGIN_ROOT."""
+    for p in manifest_paths():
+        with open(p, "r", encoding="utf-8") as f:
+            text = f.read()
+        new = PLUGIN_ROOT_TOKEN.sub("${PLUGIN_ROOT:-" + PLUGIN_ROOT + "}", text)
+        if new != text:
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(new)
+            print(f"baked plugin root into {p}")
+
+
+def run(cmd: list[str], timeout: int = 120) -> tuple[int, str]:
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return r.returncode, (r.stdout + r.stderr).strip()
+    except Exception as e:
+        return 1, str(e)
+
+
+def config_toml_text() -> str:
+    try:
+        with open(os.path.join(CODEX_HOME, "config.toml"), "r", encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def plugin_enabled_in_config() -> bool:
+    return bool(re.search(r'\[plugins\."' + re.escape(PLUGIN_NAME) + r'@[^"]+"\]\s*\n\s*enabled\s*=\s*true', config_toml_text()))
+
+
+def cmd_setup(args) -> int:
+    cfg = load_config()
+    ensure_dirs()
+    root = os.path.dirname(PLUGIN_ROOT)
+    print(f"plugin root: {PLUGIN_ROOT}")
+    bake_plugin_root()
+    if not os.path.exists(os.path.join(pet_src_dir(), "spritesheet.png")):
+        gen = os.path.join(root, "tools", "make_pet.py")
+        if os.path.exists(gen):
+            subprocess.run([sys.executable, gen], check=False)
+    cb = codex_bin(cfg)
+    ok_cli = False
+    if cb and not args.no_cli:
+        print(f"codex: {cb}")
+        rc, out = run([cb, "plugin", "marketplace", "add", root])
+        print(f"  marketplace add → rc={rc} {out[:300]}")
+        if plugin_enabled_in_config():  # reinstall: drop the cached copy so Codex picks up the current code
+            run([cb, "plugin", "remove", f"{PLUGIN_NAME}@{MARKETPLACE_NAME}"])
+        rc2, out2 = run([cb, "plugin", "add", f"{PLUGIN_NAME}@{MARKETPLACE_NAME}"])
+        print(f"  plugin add → rc={rc2} {out2[:300]}")
+        ok_cli = rc2 == 0 or plugin_enabled_in_config()
+    if not ok_cli:
+        print("falling back to manual registration in ~/.codex/config.toml")
+        text = config_toml_text()
+        block = ""
+        if f"[marketplaces.{MARKETPLACE_NAME}]" not in text:
+            block += f'\n[marketplaces.{MARKETPLACE_NAME}]\nsource_type = "local"\nsource = "{root}"\n'
+        if not plugin_enabled_in_config():
+            block += f'\n[plugins."{PLUGIN_NAME}@{MARKETPLACE_NAME}"]\nenabled = true\n'
+        if block:
+            with open(os.path.join(CODEX_HOME, "config.toml"), "a", encoding="utf-8") as f:
+                f.write(block)
+            print("  appended:" + block)
+    if not os.path.exists(CONFIG_PATH):
+        save_config(cfg)
+        print(f"wrote {CONFIG_PATH}")
+    try:
+        cmd_pet(argparse.Namespace(action="install", text=[], verdict=None))
+    except SystemExit as e:
+        print(f"pet install skipped: {e}")
+    print()
+    return cmd_doctor(args)
+
+
+def cmd_teardown(args) -> int:
+    cfg = load_config()
+    cb = codex_bin(cfg)
+    if cb:
+        print(run([cb, "plugin", "remove", f"{PLUGIN_NAME}@{MARKETPLACE_NAME}"])[1][:300])
+        print(run([cb, "plugin", "marketplace", "remove", MARKETPLACE_NAME])[1][:300])
+    path = os.path.join(CODEX_HOME, "config.toml")
+    text = config_toml_text()
+    new = re.sub(r'\n\[marketplaces\.' + re.escape(MARKETPLACE_NAME) + r'\]\n(?:[^\[\n][^\n]*\n)*', "\n", text)
+    new = re.sub(r'\n\[plugins\."' + re.escape(PLUGIN_NAME) + r'@[^"]+"\]\n(?:[^\[\n][^\n]*\n)*', "\n", new)
+    if new != text:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(new)
+        print("removed does-gpt-cheat entries from config.toml")
+    shutil.rmtree(pet_dst_dir(), ignore_errors=True)
+    if args.purge:
+        shutil.rmtree(DGC_HOME, ignore_errors=True)
+        print(f"purged {DGC_HOME}")
+    print("done. Restart the Codex app to drop the hooks.")
+    return 0
+
+
+def cmd_doctor(args) -> int:
+    cfg = load_config()
+    problems = 0
+
+    def check(ok: bool, label: str, hint: str = ""):
+        nonlocal problems
+        print(f"  {'✅' if ok else '❌'} {label}" + (f"  → {hint}" if (not ok and hint) else ""))
+        if not ok:
+            problems += 1
+
+    print(f"does-gpt-cheat doctor (v{VERSION})")
+    check(sys.version_info >= (3, 9), f"python {sys.version.split()[0]}", "needs Python 3.9+")
+    check(os.path.isdir(CODEX_HOME), f"CODEX_HOME {CODEX_HOME}", "Codex not installed?")
+    cb = codex_bin(cfg)
+    check(bool(cb), f"codex binary: {cb or 'not found'}", "set config codex_bin or put codex on PATH")
+    check(os.path.exists(os.path.join(SKILL_DIR, "SKILL.md")), f"skill {os.path.join(SKILL_DIR, 'SKILL.md')}")
+    prov = read_json(os.path.join(PLUGIN_ROOT, "assets", "modeltrace", "provenance.json"), {}) or {}
+    bank_ok = os.path.exists(BANK_PATH)
+    if bank_ok:
+        import hashlib
+        with open(BANK_PATH, "rb") as f:
+            digest = hashlib.sha256(f.read()).hexdigest()
+        bank_ok = digest == prov.get("sha256")
+    check(bank_ok, f"ModelTrace bank {'sha256 matches provenance' if bank_ok else 'missing or modified'} ({len(prov.get('models') or [])} models)")
+    mps = manifest_paths()
+    check(bool(mps), "plugin manifest present", "expected plugin/.codex-plugin/plugin.json")
+    for p in mps:
+        m = read_json(p, {}) or {}
+        hooks = m.get("hooks") or ((m.get("extensions") or {}).get("com.openai") or {}).get("hooks")
+        text = json.dumps(hooks) if hooks else ""
+        check(bool(hooks), f"hooks declared in {os.path.relpath(p, PLUGIN_ROOT)}")
+        fallback = re.search(r"\$\{PLUGIN_ROOT:-([^{}]+)\}", text)
+        if fallback and fallback.group(1).startswith("/"):
+            check(os.path.exists(os.path.join(fallback.group(1), "skills", "does-gpt-cheat", "scripts", "dgc")), f"hook fallback path {fallback.group(1)}", "run ./install.sh again")
+        else:
+            print("  ⚠️  hook commands rely on Codex exporting PLUGIN_ROOT (run ./install.sh to bake an absolute fallback)")
+    text = config_toml_text()
+    check(plugin_enabled_in_config(), f'[plugins."{PLUGIN_NAME}@…"] enabled = true in config.toml', "run ./install.sh")
+    check(not re.search(r"\[features\][^\[]*hooks\s*=\s*false", text), "hooks feature not disabled in config.toml")
+    check(os.path.exists(os.path.join(pet_dst_dir(), "pet.json")), f"pet installed at {pet_dst_dir()}", "dgc pet install")
+    evs = tail_jsonl(EVENTS_PATH, 1)
+    recent = bool(evs) and evs[0].get("ts", "") >= iso(now() - 48 * 3600)
+    print(f"  {'✅' if recent else '⚠️ '} hook events seen: {evs[0]['ts'] + ' ' + evs[0]['event'] if evs else 'none yet'}"
+          + ("" if recent else "  → restart the Codex app, send any message, then re-run doctor"))
+    try:
+        parse_frequency(cfg.get("frequency"))
+        check(True, f"frequency {cfg.get('frequency')!r}, mode {cfg.get('mode')!r}, queries {cfg.get('queries')}")
+    except ValueError as e:
+        check(False, str(e))
+    if getattr(args, "fork", False):
+        tid = args.thread
+        if not tid:
+            rows = db_recent_main_threads(1)
+            tid = rows[0]["id"] if rows else None
+        if not tid or not cb:
+            check(False, "fork doctor needs a thread id and a codex binary")
+        else:
+            try:
+                r = cas.fork_doctor(cb, tid)
+                check(True, f"ephemeral fork of {short(tid, 12)} ({r['model']} @ {r['effort']}) created in {r['elapsed_s']}s with 0 inference requests")
+            except Exception as e:
+                check(False, f"ephemeral fork failed: {e}")
+    if os.path.exists(ERRORS_PATH):
+        try:
+            last = open(ERRORS_PATH).read().strip().splitlines()[-1][:160]
+            print(f"  ⚠️  errors logged in {ERRORS_PATH} (last: {last})")
+        except Exception:
+            pass
+    print(f"{'all good' if not problems else str(problems) + ' problem(s)'} — next: restart the Codex app, then in any thread say  {SKILL_CMD}")
+    return 0 if not problems else 1
+
+
+# ------------------------------------------------------------------------------------- selftest
+
+
+def cmd_selftest(args) -> int:
+    import tempfile
+    global DGC_HOME, CONFIG_PATH, EVENTS_PATH, PROBES_INDEX, SESSIONS_DIR, PROBES_DIR, ERRORS_PATH, WORKER_LOG
+    tmp = tempfile.mkdtemp(prefix="dgc-selftest-")
+    DGC_HOME = tmp
+    CONFIG_PATH, EVENTS_PATH, PROBES_INDEX = os.path.join(tmp, "config.json"), os.path.join(tmp, "events.jsonl"), os.path.join(tmp, "probes.jsonl")
+    SESSIONS_DIR, PROBES_DIR, ERRORS_PATH, WORKER_LOG = os.path.join(tmp, "sessions"), os.path.join(tmp, "probes"), os.path.join(tmp, "errors.log"), os.path.join(tmp, "worker.log")
+    ensure_dirs()
+    fails = 0
+
+    def expect(cond, label):
+        nonlocal fails
+        print(f"  {'ok ' if cond else 'FAIL'} {label}")
+        fails += 0 if cond else 1
+
+    bank = load_bank()
+    expect(len(core.bank_model_ids(bank)) >= 6, f"fingerprint bank loaded: {len(core.bank_model_ids(bank))} models")
+    fixture = os.path.join(os.path.dirname(PLUGIN_ROOT), "tests", "fixtures", "reference_subset.jsonl")
+    rows = list(iter_jsonl(fixture))
+    if rows:
+        hits = 0
+        for r in rows:
+            a = core.analyze_global_outputs([{"text": r["text"], "expected_count": r["requested_count"]}], bank)
+            hits += a["prediction"] == r["model_id"]
+        expect(hits >= 0.8 * len(rows), f"reference outputs attributed to their own model: {hits}/{len(rows)}")
+    else:
+        print("  skip reference fixture not found")
+    expect(core.parse_numbers("Sure: [12, 355, 0, 400, 7] and then 9") == [12, 355, 7] or core.parse_numbers("[12, 355, 0, 400, 7]") == [12, 355, 7], "number parsing keeps 1..355 only")
+    expect(model_rank("gpt-6-astra") > model_rank("gpt-5.6-sol") > model_rank("gpt-5.3-codex-spark"), "model ranking by family/size")
+    expect(classify_change("gpt-6-astra", "gpt-reserve") == "downgrade", "gpt-reserve counts as a downgrade")
+    expect(parse_frequency("turns:8") == ("turns", 8) and parse_frequency("30m") == ("minutes", 30) and parse_frequency("manual") == ("manual", 0), "frequency parsing")
+    rp = os.path.join(tmp, "rollout.jsonl")
+    with open(rp, "w") as f:
+        f.write(json.dumps({"type": "turn_context", "timestamp": "t1", "payload": {"turn_id": "1", "model": "gpt-6-astra", "collaboration_mode": {"settings": {"reasoning_effort": "max"}}}}) + "\n")
+        f.write(json.dumps({"type": "event_msg", "payload": {"type": "token_count", "info": {"model_context_window": 258400}}}) + "\n")
+        f.write(json.dumps({"type": "turn_context", "timestamp": "t2", "payload": {"turn_id": "2", "model": "gpt-reserve", "collaboration_mode": {"settings": {"reasoning_effort": "medium"}}}}) + "\n")
+        f.write(json.dumps({"type": "event_msg", "payload": {"type": "token_count", "info": {"model_context_window": 128000}}}) + "\n")
+    scan, ev = scan_full(rp, frozenset({"gpt-reserve"}))
+    kinds = {e["kind"]: e["severity"] for e in ev}
+    expect(kinds.get("silent_model_change") == "hard" and kinds.get("hidden_model") == "hard" and kinds.get("context_window_change") == "hard", f"passive scan finds silent downgrade: {kinds}")
+    st = new_session("s1")
+    st["kind"], st["turns"] = "main", 8
+    expect(probe_due(st, {"frequency": "turns:8", "nudge_cooldown_turns": 4}), "probe due after N turns")
+    fake = {"prediction": "gpt-5.6-luna", "probability": 0.9, "used_outputs": 3, "results": [], "family_probabilities": [], "diagnostics": [], "calibration": {"queries": "3", "beta": 12, "cv_accuracy": 1.0}}
+    expect(fingerprint_verdict("gpt-6-astra", fake, []) == ("MISMATCH", "downgrade"), "expected ≠ fingerprint → MISMATCH downgrade")
+    expect(fingerprint_verdict("gpt-5.6-luna", fake, []) == ("MATCH", None), "expected = fingerprint → MATCH")
+    expect(fingerprint_verdict("gpt-7-nova", fake, []) == ("UNLISTED", None), "unknown expected model → UNLISTED")
+    expect(fingerprint_verdict("gpt-6-astra", fake, [{"detail": "x"}]) == ("DOWNGRADED!", "hard"), "hard evidence overrides")
+    shutil.rmtree(tmp, ignore_errors=True)
+    print("selftest:", "PASS" if not fails else f"{fails} FAILURE(S)")
+    return 0 if not fails else 1
+
+
+# ------------------------------------------------------------------------------------- method text
+
+METHOD = f"""does-gpt-cheat — how the verdict is made (v{VERSION})
+
+1. PASSIVE (every turn, zero tokens). Codex writes every thread to a rollout JSONL file and records, per turn,
+   the model slug and reasoning effort it *asked for* (turn_context), every settings change the app applied
+   (thread_settings_applied) and the model context window (token_count). The scanner flags:
+     hard  silent_model_change     the model changed between turns with no settings change
+     hard  silent_effort_change    reasoning effort dropped with no settings change
+     hard  hidden_model            a model the catalog marks visibility=hide (e.g. gpt-reserve) ran a turn
+     hard  context_window_change   the context window shrank mid-session (a different model class answered)
+     soft  applied_model_change    the app applied a lower-tier model through thread settings (you, or the app?)
+     soft  service_tier_change     the Fast/priority tier was dropped
+2. ACTIVE (on your schedule, or when you say {SKILL_CMD}). ModelTrace fingerprinting (MIT, xqy2006):
+   the thread is forked `ephemeral: true` {DEFAULT_CONFIG['queries']} times at its last completed turn — the same mechanism
+   as Codex's /side — and each fork is asked for ~300 "random" integers in 1..355 with no tools. The value
+   distribution (355-dim Hellinger vector) and an ordered-block feature (4 position blocks × 16 bins + last-digit
+   distribution) are compared with per-model centroids after projecting out prompt-induced nuisance directions;
+   a calibrated softmax gives closed-set attribution probabilities over the bank's models (GPT samples were
+   enrolled from the official Codex subscription; cross-validated accuracy 95.5% with 1 answer, 99.6% with 2,
+   100% with 3). Verdict: the thread's declared model vs the top candidate.
+     MATCH        fingerprint = declared model
+     MISMATCH     fingerprint ≠ declared model (direction: downgrade / upgrade / lateral by family and size tags)
+     DOWNGRADED!  hard passive evidence exists, whatever the fingerprint says
+     UNLISTED     the declared model is not in the bank (a look-alike is reported, no verdict)
+     INVALID      no usable sample (tool use attempted, refusal, truncation, transport error)
+   Inside a /side conversation the model answers the same challenge itself; the numbers stay in the ephemeral
+   side thread, never in your main context.
+
+WHAT IT CANNOT DO
+  • It cannot see which weights actually served a request. "Declared model" is what Codex asked for.
+  • Attribution is closed-set: a model outside the bank is mapped to its nearest look-alike. A quantised or
+    "dumbed-down" variant that keeps the slug only shows up if its number distribution drifts.
+  • Probes fork from persisted history: a turn still in flight is not included.
+Everything is stored locally under {DGC_HOME}; nothing is uploaded. Read the ledger yourself: probes/*.json.
+Credits: fingerprint bank, scorer and probe prompts from https://github.com/xqy2006/ModelTrace (MIT).
+"""
+
+
+# ---------------------------------------------------------------------------------------- main
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="dgc", description="does-gpt-cheat: detect silent model downgrades in Codex sessions")
+    p.add_argument("--version", action="version", version=f"dgc {VERSION}")
+    sub = p.add_subparsers(dest="cmd")
+
+    s = sub.add_parser("hook", help="(called by Codex hooks) consume a hook payload on stdin")
+    s.add_argument("--event", default=None)
+    s.set_defaults(fn=cmd_hook)
+
+    s = sub.add_parser("probe", help="run or answer a fingerprint probe")
+    ps = s.add_subparsers(dest="probe_cmd")
+    a = ps.add_parser("now", help="probe the current thread (forks it ephemerally; self-answer mode inside /side)")
+    a.add_argument("--thread", help="thread id (default: $CODEX_THREAD_ID)")
+    a.add_argument("--queries", type=int, default=None)
+    a.add_argument("--mode", choices=["auto", "fork", "self"], default="auto")
+    a.add_argument("--force", action="store_true", help="run inline even inside a network-less sandbox")
+    a.set_defaults(fn=cmd_probe_now)
+    a = ps.add_parser("submit-numbers", help="(self-answer mode) submit one challenge answer")
+    a.add_argument("probe_id")
+    a.add_argument("--numbers", help="JSON integer array (or any text containing the integers)")
+    a.add_argument("--numbers-file")
+    a.add_argument("--final", action="store_true", help="score now even if fewer challenges were answered")
+    a.set_defaults(fn=cmd_probe_submit_numbers)
+    a = ps.add_parser("list")
+    a.add_argument("--last", type=int, default=20)
+    a.set_defaults(fn=lambda args: cmd_report(argparse.Namespace(last=args.last)))
+
+    s = sub.add_parser("worker", help="(background) run one fork probe for a thread")
+    s.add_argument("--thread", required=True)
+    s.add_argument("--queries", type=int, default=None)
+    s.set_defaults(fn=cmd_worker)
+    s = sub.add_parser("resume", help="clear a halt on a thread (only when the user asks)")
+    s.add_argument("--thread")
+    s.set_defaults(fn=cmd_resume)
+    s = sub.add_parser("report", help="table of all probes + passive findings")
+    s.add_argument("--last", type=int, default=30)
+    s.set_defaults(fn=cmd_report)
+    s = sub.add_parser("explain", help="show one probe in detail, or --method")
+    s.add_argument("probe_id", nargs="?")
+    s.add_argument("--method", action="store_true")
+    s.set_defaults(fn=cmd_explain)
+    s = sub.add_parser("evidence", help="passive findings per session")
+    s.add_argument("--thread")
+    s.add_argument("--all", action="store_true")
+    s.set_defaults(fn=cmd_evidence)
+    s = sub.add_parser("scan", help="scan one rollout file now")
+    s.add_argument("--thread")
+    s.add_argument("--rollout")
+    s.set_defaults(fn=cmd_scan)
+    s = sub.add_parser("audit", help="scan every rollout modified in the last N days")
+    s.add_argument("--days", type=float, default=7)
+    s.add_argument("--include-subagents", action="store_true")
+    s.set_defaults(fn=cmd_audit)
+    s = sub.add_parser("status", help="config + recently seen sessions")
+    s.set_defaults(fn=cmd_status)
+    s = sub.add_parser("config", help="show / get / set / init")
+    s.add_argument("action", nargs="?", default="show")
+    s.add_argument("key", nargs="?")
+    s.add_argument("value", nargs="?")
+    s.set_defaults(fn=cmd_config)
+    s = sub.add_parser("pet", help="install | uninstall | say <text> | preview")
+    s.add_argument("action")
+    s.add_argument("text", nargs="*")
+    s.add_argument("--verdict")
+    s.set_defaults(fn=cmd_pet)
+    s = sub.add_parser("setup", help="register the plugin with Codex (used by install.sh)")
+    s.add_argument("--no-cli", action="store_true", help="skip `codex plugin …` and edit config.toml directly")
+    s.add_argument("--fork", action="store_true", help=argparse.SUPPRESS)
+    s.add_argument("--thread", help=argparse.SUPPRESS)
+    s.set_defaults(fn=cmd_setup)
+    s = sub.add_parser("teardown", help="unregister the plugin (used by uninstall.sh)")
+    s.add_argument("--purge", action="store_true", help="also delete the ledger")
+    s.set_defaults(fn=cmd_teardown)
+    s = sub.add_parser("doctor", help="check the installation; --fork also creates a real ephemeral fork (no inference)")
+    s.add_argument("--fork", action="store_true")
+    s.add_argument("--thread")
+    s.add_argument("--no-cli", action="store_true", help=argparse.SUPPRESS)
+    s.set_defaults(fn=cmd_doctor)
+    s = sub.add_parser("selftest", help="run built-in checks")
+    s.set_defaults(fn=cmd_selftest)
+    return p
+
+
+def main(argv=None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if not getattr(args, "fn", None):
+        parser.print_help()
+        return 0
+    if args.cmd == "hook":  # hooks must never break a Codex turn
+        try:
+            return cmd_hook(args)
+        except Exception as e:
+            log_error(f"hook crashed: {e!r}")
+            return 0
+    return args.fn(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

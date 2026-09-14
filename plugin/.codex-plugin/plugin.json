@@ -1,0 +1,101 @@
+{
+  "name": "does-gpt-cheat",
+  "version": "0.2.0",
+  "description": "Transparent, user-controlled detection of silent model downgrades in Codex sessions: a zero-token passive scan of the session rollout on every turn, plus ModelTrace fingerprint probes run in ephemeral forks of the thread (the mechanism behind /side) on a schedule you choose. Verdicts are delivered by a snarky Codex pet.",
+  "author": {
+    "name": "does-gpt-cheat contributors"
+  },
+  "license": "MIT",
+  "keywords": [
+    "model routing",
+    "downgrade",
+    "integrity",
+    "transparency",
+    "codex",
+    "pet",
+    "justice"
+  ],
+  "skills": "./skills/",
+  "hooks": {
+    "description": "does-gpt-cheat: passive session-integrity scan, probe scheduling, verdict delivery, optional halt",
+    "hooks": {
+      "SessionStart": [
+        {
+          "hooks": [
+            {
+              "type": "command",
+              "command": "sh -c 'python3 \"${PLUGIN_ROOT:-/Users/imac/does-gpt-cheat/plugin}/skills/does-gpt-cheat/scripts/dgc\" hook --event SessionStart'",
+              "timeout": 10,
+              "statusMessage": "does-gpt-cheat: registering session"
+            }
+          ]
+        }
+      ],
+      "UserPromptSubmit": [
+        {
+          "hooks": [
+            {
+              "type": "command",
+              "command": "sh -c 'python3 \"${PLUGIN_ROOT:-/Users/imac/does-gpt-cheat/plugin}/skills/does-gpt-cheat/scripts/dgc\" hook --event UserPromptSubmit'",
+              "timeout": 10,
+              "additionalContextLimit": 4000
+            }
+          ]
+        }
+      ],
+      "PreToolUse": [
+        {
+          "matcher": ".*",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "sh -c 'python3 \"${PLUGIN_ROOT:-/Users/imac/does-gpt-cheat/plugin}/skills/does-gpt-cheat/scripts/dgc\" hook --event PreToolUse'",
+              "timeout": 5,
+              "additionalContextLimit": 4000
+            }
+          ]
+        }
+      ],
+      "Stop": [
+        {
+          "hooks": [
+            {
+              "type": "command",
+              "command": "sh -c 'python3 \"${PLUGIN_ROOT:-/Users/imac/does-gpt-cheat/plugin}/skills/does-gpt-cheat/scripts/dgc\" hook --event Stop'",
+              "timeout": 20,
+              "statusMessage": "does-gpt-cheat: scanning session for silent downgrades"
+            }
+          ]
+        }
+      ],
+      "SessionEnd": [
+        {
+          "hooks": [
+            {
+              "type": "command",
+              "command": "sh -c 'python3 \"${PLUGIN_ROOT:-/Users/imac/does-gpt-cheat/plugin}/skills/does-gpt-cheat/scripts/dgc\" hook --event SessionEnd'",
+              "timeout": 5
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "interface": {
+    "displayName": "Does GPT Cheat?",
+    "shortDescription": "Catch silent model downgrades in your Codex sessions",
+    "longDescription": "does-gpt-cheat watches every Codex thread for silent model, reasoning-effort and context-window changes (zero tokens), and on a schedule you choose forks the thread ephemerally to run ModelTrace fingerprint probes that attribute the answering model. Results arrive as a Codex-pet card, a macOS notification and a message in the thread. Everything stays on your machine. Fingerprint bank and scorer: github.com/xqy2006/ModelTrace (MIT).",
+    "developerName": "does-gpt-cheat contributors",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Read"
+    ],
+    "defaultPrompt": [
+      "$does-gpt-cheat",
+      "Did Codex silently downgrade this session? Use $does-gpt-cheat.",
+      "/side $does-gpt-cheat"
+    ],
+    "brandColor": "#E5484D",
+    "logo": "./assets/logo.png"
+  }
+}

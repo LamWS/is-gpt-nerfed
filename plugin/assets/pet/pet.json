@@ -1,0 +1,7 @@
+{
+  "id": "does-gpt-cheat",
+  "displayName": "Inspector Astra",
+  "description": "Sniffs out silent model downgrades and congratulates you when it finds one.",
+  "spriteVersionNumber": 2,
+  "spritesheetPath": "spritesheet.png"
+}

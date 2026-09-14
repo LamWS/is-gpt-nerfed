@@ -1,0 +1,20 @@
+{
+  "name": "does-gpt-cheat",
+  "interface": {
+    "displayName": "does-gpt-cheat"
+  },
+  "plugins": [
+    {
+      "name": "does-gpt-cheat",
+      "source": {
+        "source": "local",
+        "path": "./plugin"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}
