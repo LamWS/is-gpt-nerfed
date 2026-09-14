@@ -17,11 +17,13 @@ struct Snapshot: Codable {
     var globalAlert: Bool?
     var threads: [ThreadInfo]
     var recentProbes: [ProbeSummary]
+    var demo: Bool?
 }
 
 struct Overall: Codable {
     var status: String
     var downgraded: Int
+    var suspicious: Int?
     var running: Int
     var message: String
 }
@@ -38,6 +40,8 @@ struct DGCConfig: Codable {
     var announceOk: Bool
     var sound: Bool
     var haltOnMismatch: Bool
+    var mismatchConfidence: Double?
+    var confirmUncertain: Bool?
     var petName: String
 }
 
@@ -51,6 +55,7 @@ struct ThreadInfo: Codable, Identifiable {
     var updatedAgo: String?
     var active: Bool
     var alert: Bool
+    var suspicious: Bool?
     var turns: Int
     var turnsSinceProbe: Int
     var due: Bool
@@ -75,17 +80,24 @@ struct ProbeSummary: Codable, Identifiable {
     var expected: String?
     var prediction: String?
     var probability: Double?
+    var pExpected: Double?
+    var margin: Double?
+    var confidence: String?
     var usedOutputs: Int?
     var queries: Int?
+    var rounds: Int?
     var elapsedS: Double?
     var errors: [String]?
     var quote: String?
     var isDowngrade: Bool?
+    var isSuspicious: Bool?
     var retryable: Bool?
     var retries: Int?
 
-    var probabilityText: String {
-        guard let p = probability else { return "" }
+    static func pct(_ p: Double?) -> String {
+        guard let p else { return "" }
         return "\(Int((p * 100).rounded()))%"
     }
+
+    var probabilityText: String { Self.pct(probability) }
 }

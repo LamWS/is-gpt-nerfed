@@ -16,7 +16,10 @@ final class Store {
     private var pollTask: Task<Void, Never>?
 
     var isAlert: Bool { (snapshot?.overall.downgraded ?? 0) > 0 }
+    var isWarn: Bool { !isAlert && (snapshot?.overall.suspicious ?? 0) > 0 }
     var isRunning: Bool { (snapshot?.overall.running ?? 0) > 0 }
+    /// `DGC_DEMO=1` renders synthetic English sample data (used for README screenshots).
+    let demo = ProcessInfo.processInfo.environment["DGC_DEMO"] == "1"
 
     func start(interval: Duration = .seconds(8)) {
         guard pollTask == nil else { return }
@@ -33,7 +36,7 @@ final class Store {
         refreshing = true
         defer { refreshing = false }
         do {
-            let json = try await DGC.run(["snapshot", "--json"], timeout: 20)
+            let json = try await DGC.run(["snapshot", "--json"] + (demo ? ["--demo"] : []), timeout: 20)
             let decoder = JSONDecoder()
             decoder.keyDecodingStrategy = .convertFromSnakeCase
             snapshot = try decoder.decode(Snapshot.self, from: Data(json.utf8))

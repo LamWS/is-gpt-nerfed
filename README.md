@@ -9,6 +9,17 @@ Everything runs locally, uses only documented Codex extension points (plugins, h
 app-server protocol) and modifies nothing inside Codex. The fingerprint bank, scorer and probe prompts come
 from [ModelTrace](https://github.com/xqy2006/ModelTrace) by xqy2006 (MIT); see *Credits*.
 
+<p align="center">
+  <img src="docs/panel.png" width="456" alt="Menu bar panel: pet status, fresh-session probe, active threads with verdicts">
+  <img src="docs/panel-settings.png" width="456" alt="Menu bar panel with settings expanded">
+</p>
+<p align="center">
+  <img src="docs/panel-icon-normal.png" width="44" alt="menu bar icon, all clear">
+  <img src="docs/panel-icon-warn.png" width="44" alt="menu bar icon, suspicious">
+  <img src="docs/panel-icon-alert.png" width="44" alt="menu bar icon, downgraded">
+  <br><sub>Menu bar glyph: all clear · suspicious · downgraded. Panels above are self-rendered sample data (<code>DGC_DEMO=1 DoesGPTCheat --render</code>); the live panel uses Liquid Glass.</sub>
+</p>
+
 ## How it works
 
 Two independent layers, one pet.
@@ -35,11 +46,16 @@ accuracy 95.5% with one answer, 100% with three). The thread's declared model is
 
 | verdict | meaning |
 | --- | --- |
-| `MATCH` | fingerprint = declared model |
-| `MISMATCH (downgrade / upgrade / lateral)` | fingerprint ≠ declared model |
+| `MATCH` | top candidate = declared model |
+| `MISMATCH (downgrade / upgrade / lateral)` | top candidate ≠ declared model **and** p(top) ≥ 80 %, p(declared) ≤ 20 %, fused z-score margin ≥ 0.5σ |
+| `SUSPICIOUS` | top candidate ≠ declared model but the gate above is not met; one more round of forks is run automatically before finalising (shown amber, never red) |
 | `DOWNGRADED!` | hard passive evidence exists, whatever the fingerprint says |
 | `UNLISTED` | the declared model is not in the bank; a look-alike is reported, no verdict |
-| `INVALID` | no usable sample (tool use attempted, refusal, truncation, transport error) |
+| `INVALID` | no usable sample (tool use attempted, refusal, truncation, transport error); transport failures are retried once automatically |
+
+Why a gate and not plain argmax: ModelTrace's softmax is calibrated to be decisive, and its author notes it amplifies
+small score gaps, so a "100 %" can sit on a thin margin. The gate (`mismatch_confidence`, default 0.8) plus the
+z-score margin keeps thin wins out of the red; `confirm_uncertain` spends three more forks on them instead.
 
 The three forks run in parallel (about 40 s per probe on a small thread), never touch your context, are never
 written to disk and never appear in the Codex UI. Inside a `/side` conversation the model answers the same
@@ -95,6 +111,8 @@ Uninstall: `./uninstall.sh` (add `--purge` to delete the local ledger). Codex ca
 
 The app is a thin client: it polls `dgc snapshot --json` every 8 s and dispatches `dgc worker`, `dgc config set`
 and `dgc resume`. Probes that fail on transport are retried once automatically; the panel offers a manual Retry after that.
+Thread titles come straight from Codex's state DB, so renaming a thread in Codex shows up on the next refresh.
+`DoesGPTCheat --render out.png` writes self-portraits of the panel (add `DGC_DEMO=1` for the sample data shown above).
 
 ## Using it
 
@@ -131,6 +149,8 @@ launches a detached worker that forks *that* thread. Subagent threads are exclud
 | `announce_ok` | `false` | also push MATCH verdicts into the thread |
 | `sound` | `true` | Codex notification sound on a downgrade |
 | `halt_on_mismatch` | `false` | deny work tools after a mismatch until `dgc resume` |
+| `mismatch_confidence` | `0.8` | p(top) needed (and 1 − it allowed for the declared model) to call a MISMATCH |
+| `confirm_uncertain` | `true` | run a second round of forks when the first is SUSPICIOUS |
 | `pet_name` | `Inspector Astra` | who speaks |
 | `codex_bin` | auto | path to the codex binary |
 

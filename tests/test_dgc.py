@@ -125,15 +125,41 @@ class LogicTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             dgc.coerce_config_value("languages", "klingon")
 
+    @staticmethod
+    def analysis(*rows):
+        results = [{"model": m, "probability": p, "score": s} for m, p, s in rows]
+        results.sort(key=lambda r: -r["probability"])
+        return {"prediction": results[0]["model"], "probability": results[0]["probability"], "used_outputs": 3, "results": results}
+
     def test_verdicts(self):
-        fake = {"prediction": "gpt-5.6-luna", "probability": 0.9, "used_outputs": 3}
-        self.assertEqual(dgc.fingerprint_verdict("gpt-6-astra", fake, []), ("MISMATCH", "downgrade"))
-        self.assertEqual(dgc.fingerprint_verdict("gpt-5.5", fake, []), ("MISMATCH", "upgrade"))
-        self.assertEqual(dgc.fingerprint_verdict("openai/gpt-5.6-luna", fake, []), ("MATCH", None))
-        self.assertEqual(dgc.fingerprint_verdict("gpt-7-nova", fake, []), ("UNLISTED", None))
-        self.assertEqual(dgc.fingerprint_verdict(None, fake, []), ("UNKNOWN", None))
+        confident = self.analysis(("gpt-5.6-luna", 0.91, 1.8), ("gpt-6-astra", 0.03, 0.4), ("gpt-5.5", 0.06, 0.6))
+        self.assertEqual(dgc.fingerprint_verdict("gpt-6-astra", confident, []), ("MISMATCH", "downgrade"))
+        self.assertEqual(dgc.fingerprint_verdict("gpt-5.5", confident, []), ("MISMATCH", "upgrade"))
+        self.assertEqual(dgc.fingerprint_verdict("openai/gpt-5.6-luna", confident, []), ("MATCH", None))
+        self.assertEqual(dgc.fingerprint_verdict("gpt-7-nova", confident, []), ("UNLISTED", None))
+        self.assertEqual(dgc.fingerprint_verdict(None, confident, []), ("UNKNOWN", None))
         self.assertEqual(dgc.fingerprint_verdict("gpt-6-astra", None, []), ("INVALID", None))
-        self.assertEqual(dgc.fingerprint_verdict("gpt-6-astra", fake, [{"detail": "x"}]), ("DOWNGRADED!", "hard"))
+        self.assertEqual(dgc.fingerprint_verdict("gpt-6-astra", confident, [{"detail": "x"}]), ("DOWNGRADED!", "hard"))
+
+    def test_confidence_gate(self):
+        # top candidate wins but not confidently: SUSPICIOUS, never MISMATCH
+        thin = self.analysis(("gpt-5.6-sol", 0.62, 1.1), ("gpt-6-astra", 0.31, 0.9), ("gpt-5.5", 0.07, 0.2))
+        a = dgc.assess("gpt-6-astra", thin, [])
+        self.assertEqual((a["verdict"], a["direction"], a["confidence"]), ("SUSPICIOUS", "downgrade", "low"))
+        self.assertAlmostEqual(a["p_expected"], 0.31)
+        self.assertAlmostEqual(a["margin"], 0.2)
+        # a peaked softmax with a thin z-score margin is still SUSPICIOUS
+        peaked = self.analysis(("gpt-5.6-sol", 0.95, 1.30), ("gpt-6-astra", 0.04, 1.05), ("gpt-5.5", 0.01, 0.1))
+        self.assertEqual(dgc.assess("gpt-6-astra", peaked, [])["verdict"], "SUSPICIOUS")
+        # p(top) high, p(declared) still too high
+        split = self.analysis(("gpt-5.6-sol", 0.80, 1.5), ("gpt-6-astra", 0.20, 0.6), ("gpt-5.5", 0.0, 0.0))
+        self.assertEqual(dgc.assess("gpt-6-astra", split, [])["verdict"], "MISMATCH")
+        self.assertEqual(dgc.assess("gpt-6-astra", split, [], {"mismatch_confidence": 0.9})["verdict"], "SUSPICIOUS")
+        # a weak MATCH is still a MATCH, flagged low confidence
+        weak = self.analysis(("gpt-6-astra", 0.55, 1.0), ("gpt-5.6-sol", 0.45, 0.9))
+        a = dgc.assess("gpt-6-astra", weak, [])
+        self.assertEqual((a["verdict"], a["confidence"]), ("MATCH", "low"))
+        self.assertFalse(dgc.needs_confirmation("gpt-6-astra", [], {"confirm_uncertain": True}))
 
     def test_probe_due(self):
         st = dgc.new_session("s")
@@ -205,6 +231,34 @@ class ForkProbeTests(unittest.TestCase):
         rc, out = run_cli(["probe", "now", "--mode", "fork", "--thread", "main-thread-3"], {"FAKE_CODEX_APPROVAL": "1"})
         self.assertIn("verdict: INVALID", out)
         self.assertIn("refused", out)
+
+    def test_transport_failure_is_retried_once(self):
+        marker = os.path.join(TMP, "fail-once")
+        open(marker, "w").close()
+        rc, out = run_cli(["probe", "now", "--mode", "fork", "--thread", "main-thread-9"],
+                          {"FAKE_CODEX_MODEL": "gpt-6-astra", "FAKE_CODEX_FAIL_ONCE": marker})
+        self.assertIn("verdict: MATCH", out)
+        self.assertIn("retried ×1", out)
+        self.assertFalse(os.path.exists(marker))
+        rec = dgc.read_json(dgc.probe_path(out.split("probe ")[1].split()[0]))
+        self.assertEqual(rec["retries"], 1)
+        self.assertEqual(rec["rounds"], 1)
+
+    def test_suspicious_first_round_gets_a_confirmation_round(self):
+        calls = {"n": 0}
+        real = dgc.needs_confirmation
+
+        def once(expected, outputs, cfg):
+            calls["n"] += 1
+            return calls["n"] == 1 or real(expected, outputs, cfg)
+
+        with mock.patch.object(dgc, "needs_confirmation", side_effect=once):
+            rc, out = run_cli(["probe", "now", "--mode", "fork", "--thread", "main-thread-10"], {"FAKE_CODEX_MODEL": "gpt-6-astra"})
+        self.assertIn("6/6 answers used in 2 rounds", out)
+        rec = dgc.read_json(dgc.probe_path(out.split("probe ")[1].split()[0]))
+        self.assertEqual(rec["rounds"], 2)
+        self.assertEqual(len(rec["forks"]), 6)
+        self.assertEqual(rec["verdict"], "MATCH")
 
     def test_unlisted_expected_model(self):
         rc, out = run_cli(["probe", "now", "--mode", "fork", "--thread", "main-thread-4"], {"FAKE_CODEX_MODEL": "gpt-6-astra", "FAKE_CODEX_THREAD_MODEL": "gpt-7-nova"})

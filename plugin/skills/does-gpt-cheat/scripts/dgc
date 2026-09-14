@@ -78,6 +78,8 @@ DEFAULT_CONFIG = {
     "announce_ok": False,            # also push MATCH verdicts into the thread
     "sound": True,                   # Codex notification sound on a downgrade verdict
     "halt_on_mismatch": False,       # Guard-style: deny work tools after a mismatch until `dgc resume`
+    "mismatch_confidence": 0.8,      # MISMATCH needs p(top) ≥ this, p(declared) ≤ 1-this and a score margin ≥ 0.5σ
+    "confirm_uncertain": True,       # a SUSPICIOUS first round triggers one more round before the verdict is final
     "pet_name": "Inspector Astra",
     "codex_bin": None,
     "nudge_cooldown_turns": 4,
@@ -199,8 +201,13 @@ def parse_frequency(s) -> tuple[str, int]:
 
 
 def coerce_config_value(key: str, value: str):
-    if key in ("passive", "notify", "notify_on_ok", "announce_ok", "sound", "parallel", "halt_on_mismatch"):
+    if key in ("passive", "notify", "notify_on_ok", "announce_ok", "sound", "parallel", "halt_on_mismatch", "confirm_uncertain"):
         return str(value).strip().lower() in ("1", "true", "yes", "on")
+    if key == "mismatch_confidence":
+        v = float(value)
+        if not 0.5 <= v <= 0.99:
+            raise ValueError("mismatch_confidence must be between 0.5 and 0.99")
+        return v
     if key in ("nudge_cooldown_turns", "probe_timeout_s"):
         return max(1, int(value))
     if key == "queries":
@@ -628,6 +635,9 @@ LINES = {
         "All clear: the fingerprint says {top} ({p:.0%}), which is what you asked for. The model you're paying for actually showed up. Cherish it.",
         "No downgrade detected: {top} at {p:.0%}. Suspiciously honest. I'll keep watching.",
     ],
+    "SUSPICIOUS": [
+        "Hmm. The fingerprint leans {top} ({p:.0%}) over your {expected} ({p_exp:.0%}), but not confidently enough to call it. I asked again and it is still murky. Watching.",
+    ],
     "UNLISTED": [
         "{expected} isn't in the fingerprint bank yet, so I can only tell you who it looks like: {top} ({p:.0%}). Not a verdict.",
     ],
@@ -642,7 +652,7 @@ LINES = {
     ],
 }
 
-FACES = {"MATCH": "•ᴗ•", "OK": "•ᴗ•", "MISMATCH": "ಠ_ಠ", "DOWNGRADED": "ಠ_ಠ", "UNLISTED": "•_•", "INVALID": "¬_¬", "NUDGE": "•o•"}
+FACES = {"MATCH": "•ᴗ•", "OK": "•ᴗ•", "MISMATCH": "ಠ_ಠ", "DOWNGRADED": "ಠ_ಠ", "SUSPICIOUS": "•_•", "UNLISTED": "•_•", "INVALID": "¬_¬", "NUDGE": "•o•"}
 
 
 def pet_line(kind: str, seed: str = "", **fmt) -> str:
@@ -707,20 +717,60 @@ def probe_path(pid: str) -> str:
     return os.path.join(PROBES_DIR, safe_name(pid) + ".json")
 
 
-def fingerprint_verdict(expected: str | None, analysis: dict | None, hard_evidence: list[dict]) -> tuple[str, str | None]:
+MARGIN_SIGMA = 0.5
+
+
+def assess(expected: str | None, analysis: dict | None, hard_evidence: list[dict], cfg: dict | None = None) -> dict:
+    """Turn attribution probabilities into a verdict.
+
+    Probabilities come from ModelTrace's calibrated softmax, which (as its author notes) amplifies small score
+    gaps: a 100% can hide a thin margin. So a MISMATCH must be confident on three counts: p(top) ≥ confidence,
+    p(declared) ≤ 1 − confidence, and the fused z-score margin between them ≥ 0.5σ. Anything weaker is
+    SUSPICIOUS, which the probe runners answer with one more round of forks before the verdict is final."""
+    conf = float((cfg or {}).get("mismatch_confidence") or DEFAULT_CONFIG["mismatch_confidence"])
+    out = {"verdict": None, "direction": None, "p_top": None, "p_expected": None, "margin": None, "confidence": None, "top": None}
     if hard_evidence:
-        return "DOWNGRADED!", "hard"
+        out.update(verdict="DOWNGRADED!", direction="hard")
+        return out
     if not analysis:
-        return "INVALID", None
+        out["verdict"] = "INVALID"
+        return out
+    results = analysis["results"]
+    top = results[0]
+    out.update(top=top["model"], p_top=top["probability"])
     exp = normalize_model(expected)
     if not exp:
-        return "UNKNOWN", None
-    if exp not in core.bank_model_ids(load_bank()):
-        return "UNLISTED", None
-    top = analysis["prediction"]
-    if top == exp:
-        return "MATCH", None
-    return "MISMATCH", classify_change(exp, top)
+        out["verdict"] = "UNKNOWN"
+        return out
+    exp_row = next((r for r in results if r["model"] == exp), None)
+    if exp_row is None:
+        out["verdict"] = "UNLISTED"
+        return out
+    out.update(p_expected=exp_row["probability"], margin=top["score"] - exp_row["score"])
+    if top["model"] == exp:
+        out.update(verdict="MATCH", confidence="high" if top["probability"] >= conf else "low")
+        return out
+    eps = 1e-9  # 0.80 ≥ 0.8 and 0.20 ≤ 1 − 0.8 must both hold despite binary floating point
+    confident = (top["probability"] + eps >= conf and exp_row["probability"] <= (1 - conf) + eps
+                 and out["margin"] + eps >= MARGIN_SIGMA)
+    out.update(verdict="MISMATCH" if confident else "SUSPICIOUS", direction=classify_change(exp, top["model"]),
+               confidence="high" if confident else "low")
+    return out
+
+
+def fingerprint_verdict(expected: str | None, analysis: dict | None, hard_evidence: list[dict], cfg: dict | None = None) -> tuple[str, str | None]:
+    a = assess(expected, analysis, hard_evidence, cfg)
+    return a["verdict"], a["direction"]
+
+
+def needs_confirmation(expected: str | None, outputs: list[dict], cfg: dict) -> bool:
+    if not cfg.get("confirm_uncertain", True) or not outputs:
+        return False
+    try:
+        analysis = core.analyze_global_outputs(outputs, load_bank())
+    except ValueError:
+        return False
+    return assess(expected, analysis, [], cfg)["verdict"] == "SUSPICIOUS"
 
 
 def parent_hard_evidence(thread_id: str | None, rollout_hint: str | None = None) -> tuple[list[dict], list[dict]]:
@@ -751,17 +801,21 @@ def finalize_probe(rec: dict, outputs: list[dict], expected: str | None, errors:
     if outputs and analysis is None and not errors:
         errors = errors + ["no usable answer"]
     hard, soft = parent_hard_evidence(rec.get("thread_id"), (rec.get("thread") or {}).get("path"))
-    verdict, direction = fingerprint_verdict(expected, analysis, hard)
+    a = assess(expected, analysis, hard, cfg)
+    verdict, direction = a["verdict"], a["direction"]
     top = analysis["prediction"] if analysis else None
     p = analysis["probability"] if analysis else 0.0
+    p_exp = a.get("p_expected") or 0.0
     n = analysis["used_outputs"] if analysis else 0
-    q = int(rec.get("queries") or 1)
-    fmt = {"expected": expected or "?", "top": top or "?", "p": p, "n": n, "q": q,
+    q = int(rec.get("queries") or 1) * int(rec.get("rounds") or 1)
+    fmt = {"expected": expected or "?", "top": top or "?", "p": p, "p_exp": p_exp, "n": n, "q": q,
            "detail": hard[0]["detail"] if hard else "", "reason": "; ".join(errors)[:160] or "no answers"}
     if verdict == "DOWNGRADED!":
         quote = pet_line("DOWNGRADED_HARD", seed=rec["id"], **fmt)
     elif verdict == "MISMATCH":
         quote = pet_line(f"MISMATCH_{direction}", seed=rec["id"], **fmt)
+    elif verdict == "SUSPICIOUS":
+        quote = pet_line("SUSPICIOUS", seed=rec["id"], **fmt)
     elif verdict in ("MATCH",):
         quote = pet_line("MATCH", seed=rec["id"], **fmt)
     elif verdict == "UNLISTED":
@@ -772,7 +826,9 @@ def finalize_probe(rec: dict, outputs: list[dict], expected: str | None, errors:
         quote = pet_line("INVALID", seed=rec["id"], **fmt)
 
     rec.update({"status": "done" if analysis else "failed", "finished": iso(), "expected": expected, "prediction": top,
-                "probability": round(p, 4) if analysis else None, "used_outputs": n, "verdict": verdict, "direction": direction,
+                "probability": round(p, 4) if analysis else None, "p_expected": round(p_exp, 4) if analysis else None,
+                "margin": round(a["margin"], 3) if a.get("margin") is not None else None, "confidence": a.get("confidence"),
+                "used_outputs": n, "verdict": verdict, "direction": direction, "rounds": int(rec.get("rounds") or 1),
                 "quote": quote, "errors": errors, "hard_evidence": hard[:5], "soft_evidence": soft[:5],
                 "elapsed_s": rec.get("elapsed_s") or round(now() - float(rec.get("ts_start") or now()), 1)})
     if analysis:
@@ -782,13 +838,18 @@ def finalize_probe(rec: dict, outputs: list[dict], expected: str | None, errors:
         rec["calibration"] = analysis["calibration"]
     write_json(probe_path(rec["id"]), rec)
     append_jsonl(PROBES_INDEX, {k: rec.get(k) for k in ("id", "finished", "thread_id", "mode", "expected", "prediction",
-                                                        "probability", "used_outputs", "queries", "elapsed_s", "verdict",
-                                                        "direction", "status")})
-    facts = [f"probe {rec['id']}  ·  thread {rec.get('thread_id') or '?'}  ·  mode {rec.get('mode')}  ·  {n}/{q} answers used  ·  {rec['elapsed_s']}s",
-             f"expected {expected or '?'}  ·  fingerprint {top or '?'} " + (f"({p:.0%}; calibration n={analysis['calibration']['queries']}, cv {analysis['calibration']['cv_accuracy']:.1%})" if analysis else "")
-             + (f"  ·  direction: {direction}" if direction and verdict == "MISMATCH" else "")]
+                                                        "probability", "p_expected", "margin", "confidence", "used_outputs",
+                                                        "queries", "rounds", "retries", "elapsed_s", "verdict", "direction", "status")})
+    facts = [f"probe {rec['id']}  ·  thread {rec.get('thread_id') or '?'}  ·  mode {rec.get('mode')}  ·  {n}/{q} answers used"
+             + (f" in {rec['rounds']} rounds" if rec.get("rounds", 1) > 1 else "") + (f"  ·  retried ×{rec['retries']}" if rec.get("retries") else "")
+             + f"  ·  {rec['elapsed_s']}s",
+             f"expected {expected or '?'}" + (f" {p_exp:.0%}" if analysis and a.get("p_expected") is not None else "")
+             + f"  ·  fingerprint {top or '?'}" + (f" {p:.0%}" if analysis else "")
+             + (f"  ·  margin {a['margin']:+.2f}σ" if a.get("margin") is not None else "")
+             + (f"  ·  direction: {direction}" if direction and verdict in ("MISMATCH", "SUSPICIOUS") else "")]
     if analysis:
-        facts.append("top candidates: " + ", ".join(f"{r['model']} {r['probability']:.0%}" for r in analysis["results"][:3]))
+        facts.append("top candidates: " + ", ".join(f"{r['model']} {r['probability']:.0%}" for r in analysis["results"][:3])
+                     + f"  ·  calibration n={analysis['calibration']['queries']} (cv {analysis['calibration']['cv_accuracy']:.1%})")
     for e in hard[:3]:
         facts.append("hard evidence: " + e["detail"])
     for e in soft[:2]:
@@ -816,7 +877,7 @@ def finalize_probe(rec: dict, outputs: list[dict], expected: str | None, errors:
                 st["alerts"] = st["alerts"][-20:]
             if cfg.get("halt_on_mismatch") and verdict in ("MISMATCH", "DOWNGRADED!"):
                 st["halt"] = {"id": rec["id"], "ts": iso(), "detail": quote}
-    if verdict in ("MISMATCH", "DOWNGRADED!", "INVALID", "UNLISTED") or (verdict == "MATCH" and cfg.get("notify_on_ok")):
+    if verdict in ("MISMATCH", "DOWNGRADED!", "SUSPICIOUS", "INVALID", "UNLISTED") or (verdict == "MATCH" and cfg.get("notify_on_ok")):
         notify(cfg, quote, subtitle=f"verdict: {verdict}")
     if verdict == "DOWNGRADED!" or (verdict == "MISMATCH" and direction == "downgrade"):
         play_sound(cfg)
@@ -834,43 +895,52 @@ def run_fork_probe(thread_id: str, cfg: dict, queries: int | None = None, quiet:
     write_json(probe_path(rec["id"]), rec)
     with locked_session(thread_id) as st:
         st["probe_running"] = {"pid": os.getpid(), "ts": now(), "probe": rec["id"]}
-    outputs, errors, expected = [], [], None
+    def runner():
+        return cas.probe_thread(cb, thread_id, queries=q, languages=cfg.get("languages") or ["zh", "en"],
+                                timeout_s=float(cfg.get("probe_timeout_s") or 180), parallel=bool(cfg.get("parallel", True)))
+
+    outputs, errors, out = probe_round(runner, rec)
+    if out:
+        rec["thread"], rec["forks"], rec["elapsed_s"] = out["thread"], out["forks"], out["elapsed_s"]
+        expected = out["thread"].get("model")
+    else:
+        row = db_thread(thread_id)
+        expected = row.get("model") if row else None
+    if needs_confirmation(expected, outputs, cfg):  # SUSPICIOUS first round: one more round before the verdict is final
+        rec["rounds"] = 2
+        o2, e2, out2 = probe_round(runner, rec)
+        outputs, errors = outputs + o2, errors + e2
+        if out2:
+            rec["forks"] = (rec.get("forks") or []) + out2["forks"]
+            rec["elapsed_s"] = round(float(rec.get("elapsed_s") or 0) + out2["elapsed_s"], 1)
+    return finalize_probe(rec, outputs, expected, errors, cfg, quiet=quiet)
+
+
+def probe_round(runner, rec: dict) -> tuple[list[dict], list[str], dict | None]:
+    """Run one round of forks; a single transport/network failure is retried once automatically."""
     attempt = 0
     while True:
         attempt += 1
-        outputs, errors = [], []
         try:
-            out = cas.probe_thread(cb, thread_id, queries=q, languages=cfg.get("languages") or ["zh", "en"],
-                                   timeout_s=float(cfg.get("probe_timeout_s") or 180), parallel=bool(cfg.get("parallel", True)))
-            rec["thread"], rec["forks"], rec["elapsed_s"] = out["thread"], out["forks"], out["elapsed_s"]
-            expected = out["thread"].get("model")
-            for f in out["forks"]:
-                if f.get("error"):
-                    errors.append(f["error"])
-                elif f.get("text"):
-                    outputs.append({"text": f["text"], "expected_count": f["count"]})
-            # a single network/transport hiccup gets one automatic retry
-            if not outputs and attempt < 2 and errors and transport_like(errors):
-                rec["retries"] = attempt
-                log_error(f"probe {rec['id']} transport failure, retrying: {errors[:1]}")
-                time.sleep(3)
-                continue
+            out = runner()
         except cas.AppServerError as e:
             if attempt < 2 and transport_like([str(e)]):
-                rec["retries"] = attempt
+                rec["retries"] = int(rec.get("retries") or 0) + 1
                 log_error(f"probe {rec['id']} transport failure, retrying: {e}")
                 time.sleep(3)
                 continue
-            errors.append(str(e))
-            row = db_thread(thread_id)
-            expected = row.get("model") if row else None
+            return [], [str(e)], None
         except Exception as e:  # never leave the session locked
-            errors.append(f"unexpected error: {e!r}")
             log_error(f"probe {rec['id']} crashed: {e!r}")
-            row = db_thread(thread_id)
-            expected = row.get("model") if row else None
-        break
-    return finalize_probe(rec, outputs, expected, errors, cfg, quiet=quiet)
+            return [], [f"unexpected error: {e!r}"], None
+        outputs = [{"text": f["text"], "expected_count": f["count"]} for f in out["forks"] if f.get("text") and not f.get("error")]
+        errors = [f["error"] for f in out["forks"] if f.get("error")]
+        if not outputs and attempt < 2 and errors and transport_like(errors):
+            rec["retries"] = int(rec.get("retries") or 0) + 1
+            log_error(f"probe {rec['id']} transport failure, retrying: {errors[:1]}")
+            time.sleep(3)
+            continue
+        return outputs, errors, out
 
 
 FRESH_RUNNING = "fresh_running.json"
@@ -908,36 +978,24 @@ def run_fresh_probe(cfg: dict, model: str | None = None, effort: str | None = No
            "status": "running", "dgc_version": VERSION, "pid": os.getpid(), "requested_model": model, "requested_effort": effort}
     write_json(probe_path(rec["id"]), rec)
     write_json(os.path.join(DGC_HOME, FRESH_RUNNING), {"pid": os.getpid(), "ts": now(), "probe": rec["id"]})
-    outputs, errors, expected = [], [], model
-    attempt = 0
+    expected = model
+
+    def runner():
+        return cas.probe_fresh(cb, model, effort=effort, queries=q, languages=cfg.get("languages") or ["zh", "en"],
+                               timeout_s=float(cfg.get("probe_timeout_s") or 180), parallel=bool(cfg.get("parallel", True)))
+
     try:
-        while True:
-            attempt += 1
-            outputs, errors = [], []
-            try:
-                out = cas.probe_fresh(cb, model, effort=effort, queries=q, languages=cfg.get("languages") or ["zh", "en"],
-                                      timeout_s=float(cfg.get("probe_timeout_s") or 180), parallel=bool(cfg.get("parallel", True)))
-                rec["thread"], rec["forks"], rec["elapsed_s"] = out["thread"], out["forks"], out["elapsed_s"]
-                expected = out["thread"].get("model") or model
-                for f in out["forks"]:
-                    if f.get("error"):
-                        errors.append(f["error"])
-                    elif f.get("text"):
-                        outputs.append({"text": f["text"], "expected_count": f["count"]})
-                if not outputs and attempt < 2 and errors and transport_like(errors):
-                    rec["retries"] = attempt
-                    time.sleep(3)
-                    continue
-            except cas.AppServerError as e:
-                if attempt < 2 and transport_like([str(e)]):
-                    rec["retries"] = attempt
-                    time.sleep(3)
-                    continue
-                errors.append(str(e))
-            except Exception as e:
-                errors.append(f"unexpected error: {e!r}")
-                log_error(f"fresh probe {rec['id']} crashed: {e!r}")
-            break
+        outputs, errors, out = probe_round(runner, rec)
+        if out:
+            rec["thread"], rec["forks"], rec["elapsed_s"] = out["thread"], out["forks"], out["elapsed_s"]
+            expected = out["thread"].get("model") or model
+        if needs_confirmation(expected, outputs, cfg):
+            rec["rounds"] = 2
+            o2, e2, out2 = probe_round(runner, rec)
+            outputs, errors = outputs + o2, errors + e2
+            if out2:
+                rec["forks"] = (rec.get("forks") or []) + out2["forks"]
+                rec["elapsed_s"] = round(float(rec.get("elapsed_s") or 0) + out2["elapsed_s"], 1)
     finally:
         try:
             os.remove(os.path.join(DGC_HOME, FRESH_RUNNING))
@@ -1287,12 +1345,58 @@ def probe_summary(row: dict) -> dict:
         "id": row["id"], "thread_id": row.get("thread_id"), "mode": row.get("mode"), "status": status,
         "finished": row.get("finished"), "finished_ts": finished_ts, "finished_ago": ago(finished_ts),
         "verdict": verdict, "direction": row.get("direction"), "expected": row.get("expected"), "prediction": row.get("prediction"),
-        "probability": row.get("probability"), "used_outputs": row.get("used_outputs"), "queries": row.get("queries"),
+        "probability": row.get("probability"), "p_expected": row.get("p_expected", full.get("p_expected")),
+        "margin": row.get("margin", full.get("margin")), "confidence": row.get("confidence", full.get("confidence")),
+        "used_outputs": row.get("used_outputs"), "queries": (row.get("queries") or 1) * (row.get("rounds") or full.get("rounds") or 1),
+        "rounds": row.get("rounds") or full.get("rounds") or 1,
         "elapsed_s": row.get("elapsed_s"), "errors": errors[:4], "quote": full.get("quote"),
         "is_downgrade": verdict == "DOWNGRADED!" or (verdict == "MISMATCH" and row.get("direction") == "downgrade"),
+        "is_suspicious": verdict == "SUSPICIOUS",
         "retryable": (status == "failed" or verdict == "INVALID") and (not errors or transport_like(errors)),
-        "retries": full.get("retries") or 0,
+        "retries": row.get("retries") or full.get("retries") or 0,
     }
+
+
+def demo_snapshot(cfg: dict) -> dict:
+    """Synthetic English sample data for screenshots (`dgc snapshot --demo`). Nothing here is read from disk."""
+    t0 = now()
+
+    def probe(pid, tid, verdict, direction=None, expected="gpt-6-astra", pred="gpt-6-astra", p=1.0, p_exp=None, margin=None,
+              n=3, q=3, ago_s=300, errors=None, status="done", rounds=1, retries=0, mode="fork"):
+        return {"id": pid, "thread_id": tid, "mode": mode, "status": status, "finished": iso(t0 - ago_s), "finished_ts": t0 - ago_s,
+                "finished_ago": ago(t0 - ago_s), "verdict": verdict, "direction": direction, "expected": expected, "prediction": pred,
+                "probability": p, "p_expected": p_exp if p_exp is not None else (None if p is None else (p if pred == expected else round(1 - p, 2))),
+                "margin": margin, "confidence": None if p is None else ("high" if p >= 0.8 else "low"), "used_outputs": n, "queries": q, "rounds": rounds,
+                "elapsed_s": 41.0, "errors": errors or [], "quote": "", "is_downgrade": verdict == "DOWNGRADED!" or (verdict == "MISMATCH" and direction == "downgrade"),
+                "is_suspicious": verdict == "SUSPICIOUS", "retryable": status == "failed" or verdict == "INVALID", "retries": retries}
+
+    def thread(tid, title, model, effort, turns, ago_s, last, hard=0, soft=0, ev=None, due=False, running=False, halted=False):
+        return {"id": tid, "title": title, "cwd": "/Users/you/code/" + tid, "model": model, "effort": effort, "updated_ts": t0 - ago_s,
+                "updated": iso(t0 - ago_s), "updated_ago": ago(t0 - ago_s), "active": ago_s < 15 * 60, "turns": turns,
+                "turns_since_probe": min(turns, 5), "due": due, "probe_running": running, "halted": halted, "requested": False,
+                "hard_evidence": hard, "soft_evidence": soft, "last_evidence": ev, "last_probe": last,
+                "alert": hard > 0 or bool(last and last["is_downgrade"])}
+
+    threads = [
+        thread("payments", "Refactor payment webhooks", "gpt-6-astra", "xhigh", 14, 120,
+               probe("a1b2c3d4e5", "payments", "MISMATCH", "downgrade", pred="gpt-5.6-luna", p=0.91, p_exp=0.03, margin=1.31, ago_s=240),
+               hard=1, ev="model gpt-6-astra → gpt-reserve with no settings change (downgrade)"),
+        thread("ci-flaky", "Investigate flaky CI on main", "gpt-6-astra", "high", 6, 300,
+               probe("b2c3d4e5f6", "ci-flaky", "SUSPICIOUS", "downgrade", pred="gpt-5.6-sol", p=0.62, p_exp=0.31, margin=0.28, n=6, q=6, rounds=2, ago_s=660)),
+        thread("oauth", "Add OAuth device flow", "gpt-6-astra", "max", 22, 720,
+               probe("c3d4e5f6a7", "oauth", "INVALID", status="failed", pred=None, p=None, p_exp=None, n=0, errors=["codex thread/fork timed out after 45s"], retries=1, ago_s=1200)),
+        thread("pg17", "Migrate to Postgres 17", "gpt-5.6-sol", "high", 9, 3600,
+               probe("d4e5f6a7b8", "pg17", "MATCH", expected="gpt-5.6-sol", pred="gpt-5.6-sol", p=1.0, margin=0.0, ago_s=3480)),
+        thread("relnotes", "Write release notes v2.3", "gpt-6-astra", "medium", 3, 10800, None, due=True),
+    ]
+    fresh = probe("e5f6a7b8c9", None, "MATCH", p=1.0, margin=0.0, ago_s=1800, mode="fresh")
+    recent = [threads[0]["last_probe"], threads[1]["last_probe"], threads[2]["last_probe"], fresh, threads[3]["last_probe"]]
+    recent += [probe(f"r{i}", "pg17", "MATCH", expected="gpt-5.6-sol", pred="gpt-5.6-sol", p=1.0, ago_s=7200 + i * 3600) for i in range(5)]
+    return {"generated": iso(), "version": VERSION, "dgc_bin": DGC_BIN, "ledger": "~/.codex/does-gpt-cheat", "config": cfg,
+            "hooks_last_event": iso(t0 - 12), "hooks_last_event_ago": "12s ago",
+            "overall": {"status": "alert", "downgraded": 1, "suspicious": 1, "running": 0, "message": "1 thread downgraded · 1 suspicious"},
+            "default_model": "gpt-6-astra", "default_effort": "high", "global_probe": fresh, "global_running": False, "global_alert": False,
+            "threads": threads, "recent_probes": recent, "demo": True}
 
 
 def cmd_snapshot(args) -> int:
@@ -1300,6 +1404,9 @@ def cmd_snapshot(args) -> int:
     cfg = load_config()
     ensure_dirs()
     write_bin_hint()
+    if getattr(args, "demo", False):
+        print(json.dumps(demo_snapshot(cfg), ensure_ascii=False, indent=2 if getattr(args, "pretty", False) else None))
+        return 0
     horizon = float(getattr(args, "hours", 48) or 48) * 3600
     cutoff = now() - horizon
     threads: dict[str, dict] = {}
@@ -1342,7 +1449,7 @@ def cmd_snapshot(args) -> int:
         if row.get("thread_id"):
             latest[row["thread_id"]] = row
     out_threads = []
-    downgraded = running = 0
+    downgraded = running = suspicious = 0
     for t in threads.values():
         lp = latest.get(t["id"])
         t["last_probe"] = probe_summary(lp) if lp else None
@@ -1350,10 +1457,12 @@ def cmd_snapshot(args) -> int:
         t["updated_ago"] = ago(t["updated_ts"])
         t["active"] = bool(t["updated_ts"]) and (now() - t["updated_ts"]) < 15 * 60
         t["alert"] = t["hard_evidence"] > 0 or bool(t["last_probe"] and t["last_probe"]["is_downgrade"])
+        t["suspicious"] = bool(t["last_probe"] and t["last_probe"]["is_suspicious"]) and not t["alert"]
         downgraded += 1 if t["alert"] else 0
+        suspicious += 1 if t["suspicious"] else 0
         running += 1 if t["probe_running"] else 0
         out_threads.append(t)
-    out_threads.sort(key=lambda t: (not t["alert"], -(t["updated_ts"] or 0)))
+    out_threads.sort(key=lambda t: (not t["alert"], not t["suspicious"], -(t["updated_ts"] or 0)))
     evs = tail_jsonl(EVENTS_PATH, 1)
     last_event = evs[0] if evs else None
     fresh_rows = [r for r in index_rows if r.get("mode") == "fresh"]
@@ -1361,20 +1470,22 @@ def cmd_snapshot(args) -> int:
     global_alert = bool(global_probe and global_probe["is_downgrade"])
     fr = fresh_running()
     downgraded += 1 if global_alert else 0
+    suspicious += 1 if (global_probe and global_probe["is_suspicious"] and not global_alert) else 0
     running += 1 if fr else 0
     default_model, default_effort = default_model_settings()
+    parts = []
     if downgraded:
         what = "fresh session" if global_alert and downgraded == 1 else f"{downgraded} thread{'s' if downgraded > 1 else ''}"
-        message = f"{what} downgraded"
-    elif running:
-        message = f"{running} probe{'s' if running > 1 else ''} running"
-    elif out_threads or global_probe:
-        message = "all clear"
-    else:
-        message = "no active threads"
+        parts.append(f"{what} downgraded")
+    if suspicious:
+        parts.append(f"{suspicious} suspicious")
+    if running:
+        parts.append(f"{running} probe{'s' if running > 1 else ''} running")
+    message = " · ".join(parts) if parts else ("all clear" if (out_threads or global_probe) else "no active threads")
+    status = "alert" if downgraded else ("warn" if suspicious else "ok")
     snap = {"generated": iso(), "version": VERSION, "dgc_bin": DGC_BIN, "ledger": DGC_HOME, "config": cfg,
             "hooks_last_event": (last_event or {}).get("ts"), "hooks_last_event_ago": ago(parse_iso((last_event or {}).get("ts"))),
-            "overall": {"status": "alert" if downgraded else "ok", "downgraded": downgraded, "running": running, "message": message},
+            "overall": {"status": status, "downgraded": downgraded, "suspicious": suspicious, "running": running, "message": message},
             "default_model": default_model, "default_effort": default_effort,
             "global_probe": global_probe, "global_running": bool(fr), "global_alert": global_alert,
             "threads": out_threads, "recent_probes": [probe_summary(r) for r in index_rows[-10:]][::-1]}
@@ -1886,12 +1997,16 @@ METHOD = f"""does-gpt-cheat — how the verdict is made (v{VERSION})
    distribution) are compared with per-model centroids after projecting out prompt-induced nuisance directions;
    a calibrated softmax gives closed-set attribution probabilities over the bank's models (GPT samples were
    enrolled from the official Codex subscription; cross-validated accuracy 95.5% with 1 answer, 99.6% with 2,
-   100% with 3). Verdict: the thread's declared model vs the top candidate.
-     MATCH        fingerprint = declared model
-     MISMATCH     fingerprint ≠ declared model (direction: downgrade / upgrade / lateral by family and size tags)
+   100% with 3). Verdict: the thread's declared model vs the attribution, behind a confidence gate, because the
+   calibrated softmax amplifies small score gaps (a "100%" can hide a thin margin):
+     MATCH        top candidate = declared model
+     MISMATCH     top candidate ≠ declared model AND p(top) ≥ {DEFAULT_CONFIG['mismatch_confidence']:.0%} AND p(declared) ≤ {1 - DEFAULT_CONFIG['mismatch_confidence']:.0%}
+                  AND fused z-score margin ≥ {MARGIN_SIGMA}σ (direction: downgrade / upgrade / lateral by family and size tags)
+     SUSPICIOUS   top candidate ≠ declared model but the gate is not met; the runner adds one more round of forks
+                  (up to 6 answers) before finalising, and SUSPICIOUS is shown amber, never red
      DOWNGRADED!  hard passive evidence exists, whatever the fingerprint says
      UNLISTED     the declared model is not in the bank (a look-alike is reported, no verdict)
-     INVALID      no usable sample (tool use attempted, refusal, truncation, transport error)
+     INVALID      no usable sample (tool use attempted, refusal, truncation, transport error; one automatic retry on transport)
    Inside a /side conversation the model answers the same challenge itself; the numbers stay in the ephemeral
    side thread, never in your main context.
 
@@ -1974,6 +2089,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("snapshot", help="JSON feed for the menu-bar app: threads, latest probes, config")
     s.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
     s.add_argument("--pretty", action="store_true")
+    s.add_argument("--demo", action="store_true", help="synthetic English sample data (for screenshots)")
     s.add_argument("--hours", type=float, default=48)
     s.set_defaults(fn=cmd_snapshot)
     s = sub.add_parser("config", help="show / get / set / init")

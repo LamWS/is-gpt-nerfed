@@ -36,6 +36,10 @@ def send(obj):
 
 
 def main():
+    marker = os.environ.get("FAKE_CODEX_FAIL_ONCE")
+    if marker and os.path.exists(marker):  # simulate one transport failure: die before answering anything
+        os.remove(marker)
+        sys.exit(1)
     model = os.environ.get("FAKE_CODEX_MODEL", "gpt-6-astra")
     thread_model = os.environ.get("FAKE_CODEX_THREAD_MODEL", model)
     texts = texts_for(model)
