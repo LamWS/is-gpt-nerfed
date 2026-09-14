@@ -73,6 +73,29 @@ works too (Codex supports git marketplaces); run `./install.sh` from the checked
 Uninstall: `./uninstall.sh` (add `--purge` to delete the local ledger). Codex caches a copy of the plugin under
 `~/.codex/plugins/cache/`; after changing the code, run `./install.sh` again so the cache is refreshed.
 
+## Menu bar app (macOS 26, Liquid Glass)
+
+`macos/` contains a native SwiftUI menu bar app: a paw in the menu bar that turns **red** whenever any thread
+(or the last fresh-session probe) is downgraded, and a Liquid Glass panel with:
+
+- the pet's overall status and whether hooks are alive;
+- **Fresh session**: a global probe that starts brand-new ephemeral sessions with your default model (no thread
+  context) and fingerprints what a new session gets right now;
+- **Active threads** (last 48 h, subagents excluded) with model, turns, last activity, the latest probe's verdict
+  and time, hard/soft evidence, and per-thread **Probe** / **Retry** (after a network or transport failure) /
+  **Resume** (when a halt is active) buttons;
+- **Settings**: frequency, background vs remind-only, forks per probe, prompt languages, notifications, sound,
+  halt-on-mismatch, launch at login;
+- **Report**: the full `dgc report` in a window.
+
+```bash
+./macos/build.sh --install    # needs Xcode 26; builds, ad-hoc signs, installs to ~/Applications and launches
+./macos/build.sh --run        # run from the build folder instead
+```
+
+The app is a thin client: it polls `dgc snapshot --json` every 8 s and dispatches `dgc worker`, `dgc config set`
+and `dgc resume`. Probes that fail on transport are retried once automatically; the panel offers a manual Retry after that.
+
 ## Using it
 
 ```bash

@@ -333,6 +333,53 @@ def probe_thread(codex_bin: str, thread_id: str, queries: int = 3, languages=("z
     }
 
 
+def start_ephemeral(app: AppServer, model: str, effort: str | None, provider: str | None, cwd: str) -> dict:
+    """Start a brand-new ephemeral thread (no history) with the given model settings."""
+    params = {"ephemeral": True, "model": model, "cwd": cwd}
+    if provider:
+        params["modelProvider"] = provider
+    if effort:
+        params["config"] = {"model_reasoning_effort": effort}
+    response = app.request("thread/start", params, 45) or {}
+    thread = response.get("thread") or {}
+    if not thread.get("id") or not thread.get("ephemeral", True):
+        raise AppServerError("codex did not create an ephemeral thread")
+    if response.get("model") and response.get("model") != model:
+        raise AppServerError(f"fresh thread model differs from the request ({response.get('model')} vs {model})")
+    return {"id": thread["id"], "model": response.get("model") or model, "provider": response.get("modelProvider") or provider,
+            "effort": response.get("reasoningEffort") or effort, "cwd": response.get("cwd") or cwd,
+            "service_tier": response.get("serviceTier")}
+
+
+def probe_fresh(codex_bin: str, model: str, effort: str | None = None, provider: str | None = "openai", cwd: str | None = None,
+                queries: int = 3, languages=("zh", "en"), timeout_s: float = 180, parallel: bool = True,
+                rng: random.Random | None = None) -> dict:
+    """Global probe: `queries` brand-new ephemeral sessions (no conversation context), one text-only turn each."""
+    rng = rng or random.Random()
+    cwd = cwd or os.path.expanduser("~")
+    t0 = time.time()
+    deadline = t0 + timeout_s
+    app = AppServer(codex_bin)
+    try:
+        app.initialize()
+        forks = []
+        for _ in range(max(1, int(queries))):
+            fork = start_ephemeral(app, model, effort, provider, cwd)
+            fork["language"] = rng.choice(list(languages) or ["en"])
+            fork["count"] = rng.randint(*COUNT_RANGE)
+            fork["prompt"] = fork_prompt(fork["language"], fork["count"])
+            forks.append(fork)
+        run_turns(app, forks, deadline, parallel=parallel)
+    finally:
+        app.close()
+    return {
+        "thread": {"id": None, "model": forks[0]["model"] if forks else model, "provider": provider, "effort": forks[0].get("effort") if forks else effort,
+                   "cwd": cwd, "path": None, "name": "fresh session", "last_turn": None},
+        "forks": [{k: v for k, v in f.items() if k != "prompt"} for f in forks],
+        "elapsed_s": round(time.time() - t0, 1), "parallel": parallel, "server_requests": len(app.server_requests),
+    }
+
+
 def fork_doctor(codex_bin: str, thread_id: str) -> dict:
     """Prove that an ephemeral fork of the thread can be created, without starting any model turn."""
     t0 = time.time()

@@ -835,26 +835,126 @@ def run_fork_probe(thread_id: str, cfg: dict, queries: int | None = None, quiet:
     with locked_session(thread_id) as st:
         st["probe_running"] = {"pid": os.getpid(), "ts": now(), "probe": rec["id"]}
     outputs, errors, expected = [], [], None
-    try:
-        out = cas.probe_thread(cb, thread_id, queries=q, languages=cfg.get("languages") or ["zh", "en"],
-                               timeout_s=float(cfg.get("probe_timeout_s") or 180), parallel=bool(cfg.get("parallel", True)))
-        rec["thread"], rec["forks"], rec["elapsed_s"] = out["thread"], out["forks"], out["elapsed_s"]
-        expected = out["thread"].get("model")
-        for f in out["forks"]:
-            if f.get("error"):
-                errors.append(f["error"])
-            elif f.get("text"):
-                outputs.append({"text": f["text"], "expected_count": f["count"]})
-    except cas.AppServerError as e:
-        errors.append(str(e))
-        row = db_thread(thread_id)
-        expected = row.get("model") if row else None
-    except Exception as e:  # never leave the session locked
-        errors.append(f"unexpected error: {e!r}")
-        log_error(f"probe {rec['id']} crashed: {e!r}")
-        row = db_thread(thread_id)
-        expected = row.get("model") if row else None
+    attempt = 0
+    while True:
+        attempt += 1
+        outputs, errors = [], []
+        try:
+            out = cas.probe_thread(cb, thread_id, queries=q, languages=cfg.get("languages") or ["zh", "en"],
+                                   timeout_s=float(cfg.get("probe_timeout_s") or 180), parallel=bool(cfg.get("parallel", True)))
+            rec["thread"], rec["forks"], rec["elapsed_s"] = out["thread"], out["forks"], out["elapsed_s"]
+            expected = out["thread"].get("model")
+            for f in out["forks"]:
+                if f.get("error"):
+                    errors.append(f["error"])
+                elif f.get("text"):
+                    outputs.append({"text": f["text"], "expected_count": f["count"]})
+            # a single network/transport hiccup gets one automatic retry
+            if not outputs and attempt < 2 and errors and transport_like(errors):
+                rec["retries"] = attempt
+                log_error(f"probe {rec['id']} transport failure, retrying: {errors[:1]}")
+                time.sleep(3)
+                continue
+        except cas.AppServerError as e:
+            if attempt < 2 and transport_like([str(e)]):
+                rec["retries"] = attempt
+                log_error(f"probe {rec['id']} transport failure, retrying: {e}")
+                time.sleep(3)
+                continue
+            errors.append(str(e))
+            row = db_thread(thread_id)
+            expected = row.get("model") if row else None
+        except Exception as e:  # never leave the session locked
+            errors.append(f"unexpected error: {e!r}")
+            log_error(f"probe {rec['id']} crashed: {e!r}")
+            row = db_thread(thread_id)
+            expected = row.get("model") if row else None
+        break
     return finalize_probe(rec, outputs, expected, errors, cfg, quiet=quiet)
+
+
+FRESH_RUNNING = "fresh_running.json"
+
+
+def fresh_running() -> dict | None:
+    r = read_json(os.path.join(DGC_HOME, FRESH_RUNNING))
+    if r and pid_alive(r.get("pid")):
+        return r
+    return None
+
+
+def default_model_settings() -> tuple[str | None, str | None]:
+    """What a brand-new Codex session would use: config.toml first, then the most recent main thread."""
+    model, effort = config_toml_model()
+    if not model:
+        rows = db_recent_main_threads(1)
+        if rows:
+            model, effort = rows[0].get("model"), rows[0].get("reasoning_effort")
+    return model, effort
+
+
+def run_fresh_probe(cfg: dict, model: str | None = None, effort: str | None = None, queries: int | None = None, quiet: bool = False) -> dict:
+    """Global probe: brand-new ephemeral sessions, no thread context. Answers 'what does a new session get right now?'."""
+    ensure_dirs()
+    cb = codex_bin(cfg)
+    if not cb:
+        raise SystemExit("codex binary not found; set `dgc config set codex_bin /path/to/codex`")
+    dm, de = default_model_settings()
+    model, effort = model or dm, effort or de
+    if not model:
+        raise SystemExit("no default model found; pass --model")
+    q = max(1, min(3, int(queries or cfg.get("queries") or 3)))
+    rec = {"id": cas.new_probe_id(), "mode": "fresh", "thread_id": None, "started": iso(), "ts_start": now(), "queries": q,
+           "status": "running", "dgc_version": VERSION, "pid": os.getpid(), "requested_model": model, "requested_effort": effort}
+    write_json(probe_path(rec["id"]), rec)
+    write_json(os.path.join(DGC_HOME, FRESH_RUNNING), {"pid": os.getpid(), "ts": now(), "probe": rec["id"]})
+    outputs, errors, expected = [], [], model
+    attempt = 0
+    try:
+        while True:
+            attempt += 1
+            outputs, errors = [], []
+            try:
+                out = cas.probe_fresh(cb, model, effort=effort, queries=q, languages=cfg.get("languages") or ["zh", "en"],
+                                      timeout_s=float(cfg.get("probe_timeout_s") or 180), parallel=bool(cfg.get("parallel", True)))
+                rec["thread"], rec["forks"], rec["elapsed_s"] = out["thread"], out["forks"], out["elapsed_s"]
+                expected = out["thread"].get("model") or model
+                for f in out["forks"]:
+                    if f.get("error"):
+                        errors.append(f["error"])
+                    elif f.get("text"):
+                        outputs.append({"text": f["text"], "expected_count": f["count"]})
+                if not outputs and attempt < 2 and errors and transport_like(errors):
+                    rec["retries"] = attempt
+                    time.sleep(3)
+                    continue
+            except cas.AppServerError as e:
+                if attempt < 2 and transport_like([str(e)]):
+                    rec["retries"] = attempt
+                    time.sleep(3)
+                    continue
+                errors.append(str(e))
+            except Exception as e:
+                errors.append(f"unexpected error: {e!r}")
+                log_error(f"fresh probe {rec['id']} crashed: {e!r}")
+            break
+    finally:
+        try:
+            os.remove(os.path.join(DGC_HOME, FRESH_RUNNING))
+        except OSError:
+            pass
+    return finalize_probe(rec, outputs, expected, errors, cfg, quiet=quiet)
+
+
+TRANSPORT_PATTERNS = ("timed out", "exited", "transport", "app-server", "deadline", "inference failed", "connection",
+                      "network", "unexpected error", "no usable answer")
+
+
+def transport_like(errors: list[str]) -> bool:
+    """True when every error looks like a network / transport / capacity failure rather than a verdict."""
+    if not errors:
+        return False
+    return all(any(pat in str(e).lower() for pat in TRANSPORT_PATTERNS) for e in errors)
 
 
 def spawn_worker(thread_id: str, cfg: dict) -> bool:
@@ -994,6 +1094,13 @@ def cmd_probe_now(args) -> int:
 
 def cmd_worker(args) -> int:
     cfg = load_config()
+    if getattr(args, "fresh", False) or not args.thread:
+        try:
+            rec = run_fresh_probe(cfg, model=args.model, effort=args.effort, queries=args.queries, quiet=True)
+            print(f"{iso()} fresh probe {rec['id']} verdict {rec.get('verdict')} ({rec.get('expected')} vs {rec.get('prediction')})")
+        except SystemExit as e:
+            print(f"{iso()} fresh worker aborted: {e}")
+        return 0
     try:
         rec = run_fork_probe(args.thread, cfg, queries=args.queries, quiet=True)
         print(f"{iso()} probe {rec['id']} thread {args.thread} verdict {rec.get('verdict')} ({rec.get('expected')} vs {rec.get('prediction')})")
@@ -1002,6 +1109,14 @@ def cmd_worker(args) -> int:
     finally:
         with locked_session(args.thread) as st:
             st["probe_running"] = None
+    return 0
+
+
+def cmd_probe_fresh(args) -> int:
+    cfg = load_config()
+    if fresh_running():
+        raise SystemExit("a fresh-session probe is already running")
+    run_fresh_probe(cfg, model=args.model, effort=args.effort, queries=args.queries, quiet=False)
     return 0
 
 
@@ -1122,6 +1237,149 @@ def cmd_resume(args) -> int:
 
 def evidence_line(e: dict) -> str:
     return f"{e['kind']} [{e['severity']}] {e['detail']}"
+
+
+def ago(ts: float | None) -> str:
+    if not ts:
+        return ""
+    d = max(0, int(now() - ts))
+    if d < 60:
+        return f"{d}s ago"
+    if d < 3600:
+        return f"{d // 60}m ago"
+    if d < 86400:
+        return f"{d // 3600}h ago"
+    return f"{d // 86400}d ago"
+
+
+def parse_iso(s) -> float | None:
+    try:
+        return dt.datetime.strptime(str(s), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc).timestamp()
+    except Exception:
+        return None
+
+
+def write_bin_hint() -> None:
+    try:
+        ensure_dirs()
+        with open(os.path.join(DGC_HOME, "dgc_bin"), "w", encoding="utf-8") as f:
+            f.write(DGC_BIN + "\n")
+    except OSError:
+        pass
+
+
+def db_recent_threads_detailed(since_ms: int, limit: int = 40) -> list[dict]:
+    base = (f"FROM threads WHERE archived = 0 AND (thread_source IS NULL OR thread_source != 'subagent') "
+            f"AND updated_at_ms >= ? ORDER BY updated_at_ms DESC LIMIT ?")
+    rows = db_query(f"SELECT {THREAD_COLS}, preview {base}", (since_ms, limit))
+    if not rows:
+        rows = db_query(f"SELECT {THREAD_COLS} {base}", (since_ms, limit))
+    return rows
+
+
+def probe_summary(row: dict) -> dict:
+    full = read_json(probe_path(row["id"]), {}) or {}
+    errors = full.get("errors") or []
+    verdict = row.get("verdict") or full.get("verdict")
+    status = row.get("status") or full.get("status")
+    finished_ts = parse_iso(row.get("finished") or full.get("finished"))
+    return {
+        "id": row["id"], "thread_id": row.get("thread_id"), "mode": row.get("mode"), "status": status,
+        "finished": row.get("finished"), "finished_ts": finished_ts, "finished_ago": ago(finished_ts),
+        "verdict": verdict, "direction": row.get("direction"), "expected": row.get("expected"), "prediction": row.get("prediction"),
+        "probability": row.get("probability"), "used_outputs": row.get("used_outputs"), "queries": row.get("queries"),
+        "elapsed_s": row.get("elapsed_s"), "errors": errors[:4], "quote": full.get("quote"),
+        "is_downgrade": verdict == "DOWNGRADED!" or (verdict == "MISMATCH" and row.get("direction") == "downgrade"),
+        "retryable": (status == "failed" or verdict == "INVALID") and (not errors or transport_like(errors)),
+        "retries": full.get("retries") or 0,
+    }
+
+
+def cmd_snapshot(args) -> int:
+    """Everything the menu-bar app needs, as one JSON document."""
+    cfg = load_config()
+    ensure_dirs()
+    write_bin_hint()
+    horizon = float(getattr(args, "hours", 48) or 48) * 3600
+    cutoff = now() - horizon
+    threads: dict[str, dict] = {}
+    for row in db_recent_threads_detailed(int(cutoff * 1000)):
+        threads[row["id"]] = {
+            "id": row["id"], "title": (row.get("name") or row.get("title") or (row.get("preview") or "").strip()[:70] or row["id"][:12]),
+            "cwd": row.get("cwd"), "model": row.get("model"), "effort": row.get("reasoning_effort"),
+            "updated_ts": (row.get("updated_at_ms") or 0) / 1000.0, "turns": 0, "turns_since_probe": 0, "due": False,
+            "probe_running": False, "halted": False, "requested": False, "hard_evidence": 0, "soft_evidence": 0, "last_evidence": None,
+        }
+    for st in all_sessions():
+        if st.get("kind") != "main":
+            continue
+        upd = parse_iso(st.get("updated")) or 0
+        if upd < cutoff and st["sid"] not in threads:
+            continue
+        t = threads.setdefault(st["sid"], {"id": st["sid"], "title": st["sid"][:12], "cwd": st.get("cwd"), "model": st.get("model"),
+                                           "effort": None, "updated_ts": 0, "turns": 0, "turns_since_probe": 0, "due": False,
+                                           "probe_running": False, "halted": False, "requested": False, "hard_evidence": 0,
+                                           "soft_evidence": 0, "last_evidence": None})
+        t["updated_ts"] = max(t["updated_ts"], upd)
+        t["model"] = (st.get("scan") or {}).get("model") or t.get("model") or st.get("model")
+        t["effort"] = (st.get("scan") or {}).get("effort") or t.get("effort")
+        t["cwd"] = t.get("cwd") or st.get("cwd")
+        t["turns"] = int(st.get("turns") or 0)
+        t["turns_since_probe"] = int(st.get("turns") or 0) - int(st.get("last_probe_turn") or 0)
+        t["due"] = probe_due(st, cfg)
+        running = st.get("probe_running") or {}
+        t["probe_running"] = bool(running) and (running.get("pid") is None or pid_alive(running.get("pid")))
+        t["halted"] = bool(st.get("halt"))
+        t["requested"] = bool(st.get("requested"))
+        evs = st.get("evidence") or []
+        t["hard_evidence"] = sum(1 for e in evs if e.get("severity") == "hard")
+        t["soft_evidence"] = sum(1 for e in evs if e.get("severity") == "soft")
+        flagged = [e for e in evs if e.get("severity") in ("hard", "soft")]
+        t["last_evidence"] = flagged[-1]["detail"] if flagged else None
+    index_rows = list(iter_jsonl(PROBES_INDEX))
+    latest: dict[str, dict] = {}
+    for row in index_rows:
+        if row.get("thread_id"):
+            latest[row["thread_id"]] = row
+    out_threads = []
+    downgraded = running = 0
+    for t in threads.values():
+        lp = latest.get(t["id"])
+        t["last_probe"] = probe_summary(lp) if lp else None
+        t["updated"] = iso(t["updated_ts"]) if t["updated_ts"] else None
+        t["updated_ago"] = ago(t["updated_ts"])
+        t["active"] = bool(t["updated_ts"]) and (now() - t["updated_ts"]) < 15 * 60
+        t["alert"] = t["hard_evidence"] > 0 or bool(t["last_probe"] and t["last_probe"]["is_downgrade"])
+        downgraded += 1 if t["alert"] else 0
+        running += 1 if t["probe_running"] else 0
+        out_threads.append(t)
+    out_threads.sort(key=lambda t: (not t["alert"], -(t["updated_ts"] or 0)))
+    evs = tail_jsonl(EVENTS_PATH, 1)
+    last_event = evs[0] if evs else None
+    fresh_rows = [r for r in index_rows if r.get("mode") == "fresh"]
+    global_probe = probe_summary(fresh_rows[-1]) if fresh_rows else None
+    global_alert = bool(global_probe and global_probe["is_downgrade"])
+    fr = fresh_running()
+    downgraded += 1 if global_alert else 0
+    running += 1 if fr else 0
+    default_model, default_effort = default_model_settings()
+    if downgraded:
+        what = "fresh session" if global_alert and downgraded == 1 else f"{downgraded} thread{'s' if downgraded > 1 else ''}"
+        message = f"{what} downgraded"
+    elif running:
+        message = f"{running} probe{'s' if running > 1 else ''} running"
+    elif out_threads or global_probe:
+        message = "all clear"
+    else:
+        message = "no active threads"
+    snap = {"generated": iso(), "version": VERSION, "dgc_bin": DGC_BIN, "ledger": DGC_HOME, "config": cfg,
+            "hooks_last_event": (last_event or {}).get("ts"), "hooks_last_event_ago": ago(parse_iso((last_event or {}).get("ts"))),
+            "overall": {"status": "alert" if downgraded else "ok", "downgraded": downgraded, "running": running, "message": message},
+            "default_model": default_model, "default_effort": default_effort,
+            "global_probe": global_probe, "global_running": bool(fr), "global_alert": global_alert,
+            "threads": out_threads, "recent_probes": [probe_summary(r) for r in index_rows[-10:]][::-1]}
+    print(json.dumps(snap, ensure_ascii=False, indent=2 if getattr(args, "pretty", False) else None))
+    return 0
 
 
 def cmd_report(args) -> int:
@@ -1419,6 +1677,7 @@ def cmd_setup(args) -> int:
     root = os.path.dirname(PLUGIN_ROOT)
     print(f"plugin root: {PLUGIN_ROOT}")
     bake_plugin_root()
+    write_bin_hint()
     if not os.path.exists(os.path.join(pet_src_dir(), "spritesheet.png")):
         gen = os.path.join(root, "tools", "make_pet.py")
         if os.path.exists(gen):
@@ -1666,6 +1925,11 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--mode", choices=["auto", "fork", "self"], default="auto")
     a.add_argument("--force", action="store_true", help="run inline even inside a network-less sandbox")
     a.set_defaults(fn=cmd_probe_now)
+    a = ps.add_parser("fresh", help="global probe: brand-new ephemeral sessions with the default model, no thread context")
+    a.add_argument("--model", help="model slug (default: config.toml model)")
+    a.add_argument("--effort", help="reasoning effort (default: config.toml)")
+    a.add_argument("--queries", type=int, default=None)
+    a.set_defaults(fn=cmd_probe_fresh)
     a = ps.add_parser("submit-numbers", help="(self-answer mode) submit one challenge answer")
     a.add_argument("probe_id")
     a.add_argument("--numbers", help="JSON integer array (or any text containing the integers)")
@@ -1676,8 +1940,11 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--last", type=int, default=20)
     a.set_defaults(fn=lambda args: cmd_report(argparse.Namespace(last=args.last)))
 
-    s = sub.add_parser("worker", help="(background) run one fork probe for a thread")
-    s.add_argument("--thread", required=True)
+    s = sub.add_parser("worker", help="(background) run one fork probe for a thread, or --fresh for a global probe")
+    s.add_argument("--thread")
+    s.add_argument("--fresh", action="store_true")
+    s.add_argument("--model")
+    s.add_argument("--effort")
     s.add_argument("--queries", type=int, default=None)
     s.set_defaults(fn=cmd_worker)
     s = sub.add_parser("resume", help="clear a halt on a thread (only when the user asks)")
@@ -1704,6 +1971,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_audit)
     s = sub.add_parser("status", help="config + recently seen sessions")
     s.set_defaults(fn=cmd_status)
+    s = sub.add_parser("snapshot", help="JSON feed for the menu-bar app: threads, latest probes, config")
+    s.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
+    s.add_argument("--pretty", action="store_true")
+    s.add_argument("--hours", type=float, default=48)
+    s.set_defaults(fn=cmd_snapshot)
     s = sub.add_parser("config", help="show / get / set / init")
     s.add_argument("action", nargs="?", default="show")
     s.add_argument("key", nargs="?")
