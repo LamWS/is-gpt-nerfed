@@ -8,7 +8,10 @@ struct SettingsView: View {
 
     private let frequencies: [(String, String)] = [
         ("manual", "Manually"), ("turns:4", "Every 4 turns"), ("turns:8", "Every 8 turns"), ("turns:16", "Every 16 turns"),
-        ("30m", "Every 30 minutes"), ("1h", "Every hour"), ("2h", "Every 2 hours"),
+        ("15m", "Every 15 min of activity"), ("30m", "Every 30 min of activity"), ("1h", "Every hour of activity"), ("2h", "Every 2 hours of activity"),
+    ]
+    private let heartbeats: [(String, String)] = [
+        ("manual", "Manually"), ("15m", "Every 15 minutes"), ("30m", "Every 30 minutes"), ("1h", "Every hour"), ("2h", "Every 2 hours"), ("6h", "Every 6 hours"),
     ]
     private let modes: [(String, String)] = [("auto", "Probe in the background"), ("nudge", "Only remind me")]
     private let languages: [(String, String)] = [("zh,en", "Chinese and English"), ("zh", "Chinese"), ("en", "English")]
@@ -18,7 +21,9 @@ struct SettingsView: View {
         let cfg = store.snapshot?.config
         VStack(alignment: .leading, spacing: 14) {
             Group(title: "Schedule") {
-                row("Probe each thread") { picker(cfg?.frequency ?? "turns:8", frequencies, key: "frequency") }
+                row("Probe each active thread") { picker(cfg?.frequency ?? "turns:8", frequencies, key: "frequency") }
+                RowSeparator()
+                row("Fresh-session heartbeat") { picker(cfg?.freshFrequency ?? "manual", heartbeats, key: "fresh_frequency") }
                 RowSeparator()
                 row("When a probe is due") { picker(cfg?.mode ?? "auto", modes, key: "mode") }
                 RowSeparator()

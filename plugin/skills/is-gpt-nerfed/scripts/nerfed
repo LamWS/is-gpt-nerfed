@@ -11,7 +11,7 @@ Three layers, all local, nothing leaves the machine:
            fork is asked for a long "random" integer sequence, and the sequences are attributed to a model
            with ModelTrace's calibrated fingerprint bank. Expected model ≠ fingerprint → the pet speaks up.
            Inside a `/side` conversation the model answers the same challenge directly.
-  pet      Verdicts arrive as a Codex-pet card, a macOS notification, a system message in the thread and
+  pet      Verdicts arrive as an Inspector Astra card, a macOS notification, a system message in the thread and
            (optionally) a sound. Optional Guard-style halt: deny work tools after a mismatch until `nerfed resume`.
 
 State lives under $NERFED_HOME (default: $CODEX_HOME/is-gpt-nerfed, i.e. ~/.codex/is-gpt-nerfed).
@@ -59,7 +59,6 @@ STATE_PATH = os.path.join(NERFED_HOME, "state.json")
 UNKNOWN_ACCOUNT = "unknown"
 BANK_PATH = os.path.join(PLUGIN_ROOT, "assets", "modeltrace", "unified_bank.json")
 
-PET_ID = "is-gpt-nerfed"
 PLUGIN_NAME = "is-gpt-nerfed"
 MARKETPLACE_NAME = "is-gpt-nerfed"
 SKILL_CMD = "$is-gpt-nerfed"
@@ -86,6 +85,7 @@ DEFAULT_CONFIG = {
     "mismatch_confidence": 0.8,      # MISMATCH needs p(top) ≥ this, p(declared) ≤ 1-this and a score margin ≥ 0.5σ
     "confirm_uncertain": True,       # a SUSPICIOUS first round triggers one more round before the verdict is final
     "hide_titles": False,            # panel shows "Thread 1…N" and hides the account label (screenshot mode)
+    "fresh_frequency": "manual",     # heartbeat for the fresh-session probe: "30m", "2h" … (time only; "manual" = off)
     "pet_name": "Inspector Astra",
     "codex_bin": None,
     "nudge_cooldown_turns": 4,
@@ -242,6 +242,11 @@ def coerce_config_value(key: str, value: str):
         return langs
     if key == "frequency":
         parse_frequency(value)
+        return value
+    if key == "fresh_frequency":
+        kind, _ = parse_frequency(value)
+        if kind == "turns":
+            raise ValueError("fresh_frequency is time-based: use e.g. 30m, 2h or manual")
         return value
     if key == "mode":
         v = str(value).strip().lower()
@@ -673,6 +678,39 @@ def probe_due(st: dict, cfg: dict, account: str | None = None) -> bool:
         return (now() - float(st.get("last_nudge_ts") or 0)) >= 60
     last = max(last_probe_ts, float(st.get("last_nudge_ts") or 0), float(st.get("created_ts") or 0))
     return (now() - last) >= n * 60
+
+
+def last_fresh_probe_ts(account_id: str | None = None) -> float | None:
+    last = None
+    for r in iter_jsonl(PROBES_INDEX):
+        if r.get("mode") == "fresh" and (account_id is None or r.get("account_id") == account_id):
+            ts = parse_iso(r.get("finished"))
+            if ts:
+                last = ts
+    return last
+
+
+def fresh_due(cfg: dict, account_id: str) -> bool:
+    """Heartbeat for the fresh-session probe: purely time-based, independent of thread activity."""
+    try:
+        kind, n = parse_frequency(cfg.get("fresh_frequency") or "manual")
+    except ValueError:
+        return False
+    if kind != "minutes" or fresh_running():
+        return False
+    last = last_fresh_probe_ts(account_id)
+    return last is None or now() - last >= n * 60
+
+
+def spawn_fresh_worker() -> bool:
+    try:
+        with open(WORKER_LOG, "a") as log:
+            subprocess.Popen([sys.executable, DGC_BIN, "worker", "--fresh"], stdout=log, stderr=log, stdin=subprocess.DEVNULL,
+                             start_new_session=True, env={k: v for k, v in os.environ.items() if not k.startswith("CODEX_SANDBOX")})
+        return True
+    except Exception as e:
+        log_error(f"spawn_fresh_worker failed: {e}")
+        return False
 
 
 def tool_command_preview(payload: dict) -> str:
@@ -1263,10 +1301,73 @@ def expected_model_for(thread_id: str | None) -> str | None:
     return config_toml_model()[0]
 
 
+def display_width(s: str) -> int:
+    import unicodedata
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in s)
+
+
+def fit(s, width: int) -> str:
+    """Pad or truncate to a display width (CJK-aware) so menu columns line up."""
+    s = str(s or "")
+    if display_width(s) <= width:
+        return s + " " * (width - display_width(s))
+    out, w = "", 0
+    for ch in s:
+        cw = display_width(ch)
+        if w + cw > width - 1:
+            break
+        out += ch
+        w += cw
+    return out + "…" + " " * max(0, width - w - 1)
+
+
+def pick_probe_target(cfg: dict):
+    """Interactive picker (vendored simple-term-menu). Returns ("fresh", None), ("thread", id) or None on escape."""
+    sys.path.insert(0, os.path.join(HERE, "vendor"))
+    try:
+        from simple_term_menu import TerminalMenu
+    except Exception as e:  # unsupported terminal / platform
+        raise SystemExit(f"interactive picker unavailable ({e}); pass --thread <id>")
+    snap = build_snapshot(cfg)
+    entries, targets = [], []
+    gp = snap.get("global_probe")
+    model = (snap.get("default_model") or "?") + (f" @ {snap['default_effort']}" if snap.get("default_effort") else "")
+    entries.append(f"{fit('Fresh session · brand-new ephemeral sessions', 44)} {fit(model, 22)} {fit('', 16)} "
+                   + (f"{gp['verdict']} {gp.get('finished_ago') or ''}" if gp else "never probed"))
+    targets.append(("fresh", None))
+    for t in snap["threads"]:
+        lp = t.get("last_probe")
+        verdict = "probing…" if t.get("probe_running") else (f"{lp['verdict']} {lp.get('finished_ago') or ''}" if lp else "no probe yet")
+        model = (t.get("model") or "?") + (f" @ {t['effort']}" if t.get("effort") else "")
+        entries.append(f"{fit(t['title'], 44)} {fit(model, 22)} {fit('active ' + (t.get('updated_ago') or ''), 16)} {verdict}")
+        targets.append(("thread", t["id"]))
+    title = ("is-gpt-nerfed · probe which session?   ↑↓ move   / search   enter probe   esc quit\n"
+             f"{fit('session', 44)} {fit('model', 22)} {fit('activity', 16)} last verdict")
+    try:
+        menu = TerminalMenu(entries, title=title, cycle_cursor=True, clear_screen=False, search_key="/", show_search_hint=True,
+                            menu_cursor="▸ ", menu_cursor_style=("fg_red", "bold"), menu_highlight_style=("standout",))
+        idx = menu.show()
+    except NotImplementedError as e:  # e.g. TERM not set
+        raise SystemExit(f"interactive picker needs a terminal ({e}); pass --thread <id> or --no-pick")
+    return None if idx is None else targets[idx]
+
+
 def cmd_probe_now(args) -> int:
     cfg = load_config()
     ensure_dirs()
-    tid, how = resolve_thread(args.thread)
+    interactive = (not args.thread and not getattr(args, "no_pick", False)
+                   and not any(os.environ.get(v) for v in ("CODEX_THREAD_ID", "CODEX_SESSION_ID"))
+                   and sys.stdin.isatty() and sys.stdout.isatty())
+    if interactive:
+        choice = pick_probe_target(cfg)
+        if choice is None:
+            print("cancelled")
+            return 0
+        if choice[0] == "fresh":
+            return cmd_probe_fresh(argparse.Namespace(model=None, effort=None, queries=args.queries))
+        tid, how = choice[1], "picker"
+    else:
+        tid, how = resolve_thread(args.thread)
     if not tid:
         raise SystemExit("cannot determine the thread: pass --thread <id> (Codex exports CODEX_THREAD_ID to tool commands)")
     mode = args.mode
@@ -1287,7 +1388,7 @@ def cmd_probe_now(args) -> int:
         with locked_session(tid) as st:
             st["requested"] = True
         print(f"Queued (thread {tid}, via {how}): this shell runs inside Codex's network-less sandbox, so the probe will start "
-              "in the background the moment this turn ends. The pet will pop up with the verdict; it is also shown at the "
+              "in the background the moment this turn ends. Inspector Astra will pop up with the verdict; it is also shown at the "
               f"start of the next turn and in `{DGC_BIN} report`.")
         return 0
     run_fork_probe(tid, cfg, queries=args.queries, quiet=False)
@@ -1297,6 +1398,9 @@ def cmd_probe_now(args) -> int:
 def cmd_worker(args) -> int:
     cfg = load_config()
     if getattr(args, "fresh", False) or not args.thread:
+        if fresh_running():
+            print(f"{iso()} fresh probe already running; skipping")
+            return 0
         try:
             rec = run_fresh_probe(cfg, model=args.model, effort=args.effort, queries=args.queries, quiet=True)
             print(f"{iso()} fresh probe {rec['id']} verdict {rec.get('verdict')} ({rec.get('expected')} vs {rec.get('prediction')})")
@@ -1334,7 +1438,7 @@ def deliver_alerts(st: dict, out: dict, model_visible: bool, cfg: dict) -> None:
     out["systemMessage"] = (out.get("systemMessage", "") + "\n" if out.get("systemMessage") else "") + prefix + text
     if model_visible:
         ctx = ("[is-gpt-nerfed] A model-integrity probe of this thread finished. Before anything else, tell the user "
-               f"verbatim, as the Codex pet: {text}")
+               f"verbatim, as Inspector Astra (the plugin's persona): {text}")
         hso = out.setdefault("hookSpecificOutput", {})
         hso["additionalContext"] = (hso.get("additionalContext", "") + "\n" if hso.get("additionalContext") else "") + ctx
         for a in pending:
@@ -1430,6 +1534,8 @@ def cmd_hook(args) -> int:
                     st["last_nudge_turn"], st["last_nudge_ts"] = st["turns"], now()
                     messages.append(pet_line("NUDGE", why=why, cmd=SKILL_CMD, side=SIDE_CMD))
                     log_event("nudge", sid=sid, why=why)
+            if st["kind"] == "main" and fresh_due(cfg, acct["id"]) and spawn_fresh_worker():
+                log_event("fresh_due", why=f"{cfg.get('fresh_frequency')} elapsed", triggered_by=sid)
             if messages:
                 out["systemMessage"] = f"🐾 {cfg.get('pet_name') or 'Codex Pet'}: " + "\n".join(messages)
                 notify(cfg, messages[0], subtitle="is-gpt-nerfed")
@@ -1601,7 +1707,8 @@ def demo_snapshot(cfg: dict) -> dict:
             "hooks": {"checked": iso(t0 - 300), "checked_ago": "5m ago", "total": 5, "trusted": 5, "untrusted": 0, "state": "trusted",
                       "error": None, "last_desktop_event": iso(t0 - 12), "last_desktop_event_ago": "12s ago", "desktop_loaded": True,
                       "installed_ago": "2h ago", "desktop_loaded_current": True, "stale_since_install_s": None},
-            "install": {"plugin_enabled": True, "codex_found": True, "pet_installed": True, "marketplace_root": "/Applications/IsGPTNerfed.app/Contents/Resources/marketplace", "bundled": True},
+            "install": {"plugin_enabled": True, "codex_found": True, "marketplace_root": "/Applications/IsGPTNerfed.app/Contents/Resources/marketplace", "bundled": True},
+            "fresh_due": False,
             "account": {"label": "y…@example.com", "plan": "plus", "switched_at": iso(t0 - 2700), "switched_ago": "45m ago",
                         "previous_label": "o…@example.com"},
             "overall": {"status": "alert", "downgraded": 1, "suspicious": 1, "unverified": 1, "running": 0,
@@ -1655,11 +1762,17 @@ def cmd_snapshot(args) -> int:
     ensure_dirs()
     write_bin_hint()
     if getattr(args, "demo", False):
-        print(json.dumps(demo_snapshot(cfg), ensure_ascii=False, indent=2 if getattr(args, "pretty", False) else None))
-        return 0
+        snap = demo_snapshot(cfg)
+    else:
+        snap = build_snapshot(cfg, hours=float(getattr(args, "hours", 48) or 48))
+    print(json.dumps(snap, ensure_ascii=False, indent=2 if getattr(args, "pretty", False) else None))
+    return 0
+
+
+def build_snapshot(cfg: dict, hours: float = 48.0) -> dict:
     acct = note_account("snapshot")
     migrate_untagged_records(acct["id"])
-    horizon = float(getattr(args, "hours", 48) or 48) * 3600
+    horizon = hours * 3600
     cutoff = now() - horizon
     threads: dict[str, dict] = {}
     for row in db_recent_threads_detailed(int(cutoff * 1000)):
@@ -1760,11 +1873,10 @@ def cmd_snapshot(args) -> int:
                   to_status=status, message=message, downgraded=downgraded, suspicious=suspicious, unverified=unverified)
         write_json(STATE_PATH, {**state, "last_status": status, "last_message": message, "changed_at": iso()})
     install = {"plugin_enabled": plugin_enabled_in_config(), "codex_found": bool(codex_bin(cfg)),
-               "pet_installed": os.path.exists(os.path.join(pet_dst_dir(), "pet.json")),
                "marketplace_root": os.path.dirname(PLUGIN_ROOT), "bundled": "/Contents/Resources/" in PLUGIN_ROOT}
     snap = {"generated": iso(), "version": VERSION, "nerfed_bin": DGC_BIN, "ledger": NERFED_HOME, "config": cfg,
             "hooks_last_event": (last_event or {}).get("ts"), "hooks_last_event_ago": ago(parse_iso((last_event or {}).get("ts"))),
-            "hooks": hooks, "install": install,
+            "hooks": hooks, "install": install, "fresh_due": fresh_due(cfg, acct["id"]),
             "overall": {"status": status, "downgraded": downgraded, "suspicious": suspicious, "unverified": unverified,
                         "running": running, "message": message},
             "default_model": default_model, "default_effort": default_effort,
@@ -1773,8 +1885,7 @@ def cmd_snapshot(args) -> int:
                         "switched_ago": ago(acct.get("switched_ts")) if acct.get("switched_ts") else None,
                         "previous_label": (acct.get("previous") or {}).get("label")},
             "threads": out_threads, "recent_probes": [probe_summary(r, acct["id"]) for r in index_rows[-10:]][::-1]}
-    print(json.dumps(snap, ensure_ascii=False, indent=2 if getattr(args, "pretty", False) else None))
-    return 0
+    return snap
 
 
 def hooks_status(cfg: dict, max_age_s: float = 900, force: bool = False) -> dict:
@@ -2089,34 +2200,8 @@ def cmd_config(args) -> int:
 # ------------------------------------------------------------------------------------------ pet
 
 
-def pet_src_dir() -> str:
-    return os.path.join(PLUGIN_ROOT, "assets", "pet")
-
-
-def pet_dst_dir() -> str:
-    return os.path.join(CODEX_HOME, "pets", PET_ID)
-
-
 def cmd_pet(args) -> int:
     cfg = load_config()
-    if args.action == "install":
-        src = pet_src_dir()
-        if not os.path.exists(os.path.join(src, "pet.json")):
-            gen = os.path.join(os.path.dirname(PLUGIN_ROOT), "tools", "make_pet.py")
-            if os.path.exists(gen):
-                subprocess.run([sys.executable, gen], check=False)
-        if not os.path.exists(os.path.join(src, "pet.json")):
-            raise SystemExit(f"pet assets missing in {src}; run tools/make_pet.py")
-        dst = pet_dst_dir()
-        os.makedirs(dst, exist_ok=True)
-        for fn in os.listdir(src):
-            shutil.copy2(os.path.join(src, fn), os.path.join(dst, fn))
-        print(f"installed pet → {dst}  (Codex app: /pet → choose '{(read_json(os.path.join(dst, 'pet.json'), {}) or {}).get('displayName')}')")
-        return 0
-    if args.action == "uninstall":
-        shutil.rmtree(pet_dst_dir(), ignore_errors=True)
-        print("pet removed")
-        return 0
     if args.action == "say":
         text = " ".join(args.text) or pet_line("MATCH", top="gpt-6-astra", p=0.99)
         print(pet_card(cfg, args.verdict or "OK", text, []))
@@ -2131,7 +2216,7 @@ def cmd_pet(args) -> int:
             print(pet_card(cfg, v, q, []))
             print()
         return 0
-    raise SystemExit("usage: nerfed pet [install|uninstall|say <text>|preview]")
+    raise SystemExit("usage: nerfed pet [say <text>|preview]")
 
 
 # ---------------------------------------------------------------------------------------- setup
@@ -2167,10 +2252,6 @@ def cmd_setup(args) -> int:
     root = os.path.dirname(PLUGIN_ROOT)
     print(f"plugin root: {PLUGIN_ROOT}")
     write_bin_hint()
-    if not os.path.exists(os.path.join(pet_src_dir(), "spritesheet.png")):
-        gen = os.path.join(root, "tools", "make_pet.py")
-        if os.path.exists(gen):
-            subprocess.run([sys.executable, gen], check=False)
     cb = codex_bin(cfg)
     ok_cli = False
     if cb and not args.no_cli:
@@ -2219,10 +2300,6 @@ def cmd_setup(args) -> int:
     if not os.path.exists(CONFIG_PATH):
         save_config(cfg)
         print(f"wrote {CONFIG_PATH}")
-    try:
-        cmd_pet(argparse.Namespace(action="install", text=[], verdict=None))
-    except SystemExit as e:
-        print(f"pet install skipped: {e}")
     log_event("setup", plugin_root=PLUGIN_ROOT, via_cli=ok_cli)
     # Hook trust: Codex skips hooks it has not been told to trust (the /hooks screen in the TUI). Offer to record it.
     if cb and not getattr(args, "no_trust", False):
@@ -2266,7 +2343,6 @@ def cmd_teardown(args) -> int:
         with open(path, "w", encoding="utf-8") as f:
             f.write(new)
         print("removed is-gpt-nerfed entries from config.toml")
-    shutil.rmtree(pet_dst_dir(), ignore_errors=True)
     if args.purge:
         shutil.rmtree(NERFED_HOME, ignore_errors=True)
         print(f"purged {NERFED_HOME}")
@@ -2314,7 +2390,6 @@ def cmd_doctor(args) -> int:
     text = config_toml_text()
     check(plugin_enabled_in_config(), f'[plugins."{PLUGIN_NAME}@…"] enabled = true in config.toml', "run ./install.sh")
     check(not re.search(r"\[features\][^\[]*hooks\s*=\s*false", text), "hooks feature not disabled in config.toml")
-    check(os.path.exists(os.path.join(pet_dst_dir(), "pet.json")), f"pet installed at {pet_dst_dir()}", "nerfed pet install")
     hs = hooks_status(cfg, force=bool(getattr(args, "live", False)))
     if hs.get("state") == "trusted":
         check(True, f"hooks trusted by Codex ({hs.get('trusted')}/{hs.get('total')}, checked {hs.get('checked_ago')})")
@@ -2478,6 +2553,7 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--queries", type=int, default=None)
     a.add_argument("--mode", choices=["auto", "fork", "self"], default="auto")
     a.add_argument("--force", action="store_true", help="run inline even inside a network-less sandbox")
+    a.add_argument("--no-pick", action="store_true", help="skip the interactive picker and guess the thread")
     a.set_defaults(fn=cmd_probe_now)
     a = ps.add_parser("fresh", help="global probe: brand-new ephemeral sessions with the default model, no thread context")
     a.add_argument("--model", help="model slug (default: config.toml model)")
@@ -2547,7 +2623,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("key", nargs="?")
     s.add_argument("value", nargs="?")
     s.set_defaults(fn=cmd_config)
-    s = sub.add_parser("pet", help="install | uninstall | say <text> | preview")
+    s = sub.add_parser("pet", help="say <text> | preview — the persona that delivers verdicts")
     s.add_argument("action")
     s.add_argument("text", nargs="*")
     s.add_argument("--verdict")

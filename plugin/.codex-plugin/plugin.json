@@ -1,7 +1,7 @@
 {
   "name": "is-gpt-nerfed",
   "version": "0.4.0",
-  "description": "Transparent, user-controlled detection of silent model downgrades in Codex sessions: a zero-token passive scan of the session rollout on every turn, plus ModelTrace fingerprint probes run in ephemeral forks of the thread (the mechanism behind /side) on a schedule you choose. Verdicts are delivered by a snarky Codex pet.",
+  "description": "Transparent, user-controlled detection of silent model downgrades in Codex sessions: a zero-token passive scan of the session rollout on every turn, plus ModelTrace fingerprint probes run in ephemeral forks of the thread (the mechanism behind /side) on a schedule you choose. Verdicts are delivered by Inspector Astra, a snarky persona.",
   "author": {
     "name": "is-gpt-nerfed contributors"
   },
@@ -12,7 +12,6 @@
     "integrity",
     "transparency",
     "codex",
-    "pet",
     "justice"
   ],
   "skills": "./skills/",
@@ -84,7 +83,7 @@
   "interface": {
     "displayName": "Is GPT nerfed?",
     "shortDescription": "Catch silent model downgrades in your Codex sessions",
-    "longDescription": "is-gpt-nerfed watches every Codex thread for silent model, reasoning-effort and context-window changes (zero tokens), and on a schedule you choose forks the thread ephemerally to run ModelTrace fingerprint probes that attribute the answering model. Results arrive as a Codex-pet card, a macOS notification and a message in the thread. Everything stays on your machine. Fingerprint bank and scorer: github.com/xqy2006/ModelTrace (MIT).",
+    "longDescription": "is-gpt-nerfed watches every Codex thread for silent model, reasoning-effort and context-window changes (zero tokens), and on a schedule you choose forks the thread ephemerally to run ModelTrace fingerprint probes that attribute the answering model. Results arrive as an Inspector Astra card, a macOS notification and a message in the thread. Everything stays on your machine. Fingerprint bank and scorer: github.com/xqy2006/ModelTrace (MIT).",
     "developerName": "is-gpt-nerfed contributors",
     "category": "Developer Tools",
     "capabilities": [

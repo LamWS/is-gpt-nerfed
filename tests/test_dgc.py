@@ -505,6 +505,30 @@ class ForkProbeTests(unittest.TestCase):
         snap = json.loads(run_cli(["snapshot", "--json"])[1])
         self.assertFalse(all(re.fullmatch(r"Thread \d+", t["title"]) for t in snap["threads"]))
 
+    def test_fresh_heartbeat_and_picker_helpers(self):
+        self.assertEqual(dgc.coerce_config_value("fresh_frequency", "30m"), "30m")
+        with self.assertRaises(ValueError):
+            dgc.coerce_config_value("fresh_frequency", "turns:8")
+        acct = dgc.current_account()["id"]
+        self.assertFalse(dgc.fresh_due({"fresh_frequency": "manual"}, acct))
+        self.assertTrue(dgc.fresh_due({"fresh_frequency": "1m"}, "account-with-no-fresh-probes"))
+        dgc.append_jsonl(dgc.PROBES_INDEX, {"id": "freshhb01", "mode": "fresh", "thread_id": None, "status": "done", "verdict": "MATCH",
+                                             "expected": "gpt-6-astra", "prediction": "gpt-6-astra", "probability": 1.0,
+                                             "finished": dgc.iso(), "account_id": "hb-account"})
+        self.assertFalse(dgc.fresh_due({"fresh_frequency": "30m"}, "hb-account"), "probed just now")
+        dgc.append_jsonl(dgc.PROBES_INDEX, {"id": "freshhb02", "mode": "fresh", "thread_id": None, "status": "done", "verdict": "MATCH",
+                                             "expected": "gpt-6-astra", "prediction": "gpt-6-astra", "probability": 1.0,
+                                             "finished": dgc.iso(dgc.now() - 3600), "account_id": "hb-old"})
+        self.assertTrue(dgc.fresh_due({"fresh_frequency": "30m"}, "hb-old"))
+        # CJK-aware column fitting for the picker
+        self.assertEqual(dgc.display_width("完成 Exa"), 8)
+        self.assertEqual(dgc.display_width(dgc.fit("完成 Exa 小时采集与研究资料消费闭环", 20)), 20)
+        self.assertEqual(dgc.fit("abc", 6), "abc   ")
+        self.assertTrue(dgc.fit("abcdefghij", 6).endswith("…"))
+        self.assertEqual(dgc.display_width(dgc.fit("abcdefghij", 6)), 6)
+        snap = json.loads(run_cli(["snapshot", "--json"])[1])
+        self.assertIn("fresh_due", snap)
+
     def test_hook_argv_never_fails(self):
         # Codex treats a non-zero hook exit as a reason to stop the user's turn; argparse would exit 2.
         for argv in (["hook", "--eventUserPromptSubmit"], ["hook", "--event=Stop"], ["hook", "--bogus", "x"], ["hook"]):

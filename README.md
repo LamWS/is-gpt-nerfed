@@ -5,7 +5,7 @@
 *Shrinkflation detector for Codex.*
 
 **Is the model answering you the one you selected?** is-gpt-nerfed is a Codex plugin that watches your
-Codex desktop / CLI threads for silent model downgrades and lets a snarky Codex pet break the news:
+Codex desktop / CLI threads for silent model downgrades and lets a snarky inspector break the news:
 
 > 🎉 Congrats! You've been nerfed! You asked for gpt-6-astra; the fingerprint says gpt-5.6-luna (91%, 3/3 answers). Enjoy the discount you didn't ask for.
 
@@ -26,7 +26,7 @@ from [ModelTrace](https://github.com/xqy2006/ModelTrace) by xqy2006 (MIT); see *
 
 ## How it works
 
-Two independent layers, one pet.
+Two independent layers, one messenger.
 
 **1. Passive scan, zero tokens, every turn.** Codex writes every thread to a rollout file and records, per turn,
 the model and reasoning effort it *asked for*, every settings change the app applied, and the model's context
@@ -65,10 +65,16 @@ The three forks run in parallel (about 40 s per probe on a small thread), never 
 written to disk and never appear in the Codex UI. Inside a `/side` conversation the model answers the same
 challenge itself instead; the numbers stay in the ephemeral side thread.
 
-**The pet.** Verdicts arrive as a card in the thread, a macOS notification titled with the pet's name, a system
-message at the next turn boundary, and (for downgrades) the Codex notification sound. A custom pixel-art pet,
-*Inspector Astra*, is installed into `~/.codex/pets/` for `/pet`. Optional Guard-style halt: with
+**The messenger.** Verdicts arrive as a card printed by *Inspector Astra* (the plugin's persona), a macOS notification,
+a system message at the next turn boundary where the model repeats the verdict verbatim, and (for downgrades) the Codex
+notification sound. Match is silent unless you enable `announce_ok` / `notify_on_ok`. Optional Guard-style halt: with
 `halt_on_mismatch` on, work tools are denied after a mismatch until you explicitly say to resume.
+
+**Schedules.** `frequency` governs per-thread probes and counts either turns (`turns:8`) or *active* time (`30m`: a
+thread is re-probed at the first turn end 30 minutes after its last probe; idle threads are left alone because probing
+them costs tokens and says nothing new). `fresh_frequency` is a pure clock: every N minutes a brand-new ephemeral
+session is probed regardless of activity ("what does my account get right now?"), triggered by the hooks while you
+work and by the menu bar app while you don't. Both are in the app's settings.
 
 ## Requirements
 
@@ -79,15 +85,15 @@ message at the next turn boundary, and (for downgrades) the Codex notification s
 | Python | the system `python3` is enough (3.9+; no packages). On a Mac without the Command Line Tools, `python3` prompts to install them once |
 | Xcode | only to build the menu bar app yourself (Xcode 26); otherwise use the release zip |
 
-Windows and Linux: the plugin logic is portable Python, but notifications, the pet and the app are macOS-only and
-nothing has been tested there.
+Windows and Linux: the plugin logic is portable Python, but notifications and the app are macOS-only and nothing has
+been tested there. Codex's desktop app itself ships for macOS and Windows; Linux users have the CLI.
 
 ## Install
 
 **Easiest (macOS 26): the app installs the plugin.** Download `IsGPTNerfed-<version>.zip` from Releases, move the app
 to Applications, open it (first launch: right-click → Open, it is ad-hoc signed), click the paw in the menu bar and press
-**Install** in the Setup row. The plugin travels inside the app bundle; Install registers it with Codex, installs the pet
-and records hook trust. Nothing else to run.
+**Install** in the Setup row. The plugin travels inside the app bundle; Install registers it with Codex and records hook
+trust. Nothing else to run.
 
 **From a checkout (any macOS, no app needed):**
 
@@ -103,12 +109,14 @@ git clone https://github.com/<owner>/is-gpt-nerfed ~/is-gpt-nerfed && cd ~/is-gp
    `./install.sh` again**. A running Codex app keeps using the hook definitions it already loaded, so the installer
    leaves the previous version's path resolvable and the hook command itself exits quietly when its file is gone:
    a reinstall never blocks tool calls in your open threads;
-2. installs the pet for `/pet`;
-3. asks to **trust the plugin's hooks** (`--trust-hooks` skips the question, `--no-trust` leaves them alone). Codex never
+2. asks to **trust the plugin's hooks** (`--trust-hooks` skips the question, `--no-trust` leaves them alone). Codex never
    runs a hook it has not been told to trust, and it does not tell you: trust is a per-definition hash under
    `[hooks.state]` in `~/.codex/config.toml`, written through the same `config/batchWrite` call the Codex TUI's `/hooks`
    screen makes. `nerfed hooks status` shows it, `nerfed hooks trust` records it later;
-4. links `nerfed` into `~/.local/bin` when that directory exists, and runs `nerfed doctor`.
+3. links `nerfed` into `~/.local/bin` when that directory exists, and runs `nerfed doctor`.
+
+Hooks can never get in your way: the hook entry point exits 0 whatever happens (Codex reads a non-zero exit as a
+reason to stop your turn), and a reinstall keeps the previous version's path resolvable for a running Codex app.
 
 The codex binary is found on `PATH` or inside the ChatGPT/Codex app bundle (`CODEX_BIN=/path/to/codex ./install.sh`
 to override). The running desktop app picked up the plugin and the trust within a couple of minutes in testing; if the
@@ -118,7 +126,7 @@ Then, in any thread, say `$is-gpt-nerfed` (or `/side $is-gpt-nerfed` to keep it 
 schedule run: by default every thread is probed in the background every 8 turns.
 
 Codex also accepts this repository as a git marketplace: `codex plugin marketplace add <owner>/is-gpt-nerfed`, then
-`codex plugin add is-gpt-nerfed@is-gpt-nerfed`; run `./install.sh` from the checked-out copy for the pet, trust and doctor.
+`codex plugin add is-gpt-nerfed@is-gpt-nerfed`; run `./install.sh` from the checked-out copy for trust and doctor.
 
 Uninstall: `./uninstall.sh` (add `--purge` to delete the local ledger).
 
@@ -140,8 +148,8 @@ Uninstall: `./uninstall.sh` (add `--purge` to delete the local ledger).
 `macos/` contains a native SwiftUI menu bar app: a paw in the menu bar that turns **red** whenever any thread
 (or the last fresh-session probe) is downgraded, and a Liquid Glass panel with:
 
-- the pet's overall status, the signed-in account (and when it last changed), and whether Codex trusts and actually
-  runs the hooks (orange until it does);
+- the overall status, the signed-in account (and when it last changed), and whether Codex trusts and actually runs
+  the hooks (orange until it does);
 - **Fresh session**: a global probe that starts brand-new ephemeral sessions with your default model (no thread
   context) and fingerprints what a new session gets right now;
 - **Active threads** (last 48 h, subagents excluded) with model, turns, last activity, the latest probe's verdict
@@ -199,9 +207,11 @@ every fork's answer text) in `probes/*.json`. The menu bar app also logs to the 
 ./bin/nerfed audit --days 7              # zero-token scan of every rollout of the last week
 ./bin/nerfed status                      # schedule state per active thread
 ./bin/nerfed doctor --fork               # proves an ephemeral fork works, with zero inference
-./bin/nerfed config set frequency turns:8   # or 30m, 2h, manual
+./bin/nerfed config set frequency turns:8   # or 30m, 2h, manual (per active thread)
+./bin/nerfed config set fresh_frequency 30m # heartbeat: a brand-new session every 30 minutes
 ./bin/nerfed config set halt_on_mismatch true
-./bin/nerfed probe now --thread <id>     # probe any persisted thread from a terminal
+./bin/nerfed probe now                   # interactive picker: fresh session or any recent thread (↑↓, / to search)
+./bin/nerfed probe now --thread <id>     # non-interactive
 ```
 
 In a thread: `$is-gpt-nerfed` runs a probe of *that* thread (the model reads `CODEX_THREAD_ID`); if the model's shell
@@ -215,7 +225,8 @@ launches a detached worker that forks *that* thread. Subagent threads are exclud
 
 | key | default | meaning |
 | --- | --- | --- |
-| `frequency` | `turns:8` | `turns:N`, `Nm`, `Nh` or `manual` |
+| `frequency` | `turns:8` | per active thread: `turns:N`, `Nm`, `Nh` (of activity) or `manual` |
+| `fresh_frequency` | `manual` | heartbeat for the fresh-session probe: `Nm`, `Nh` or `manual` |
 | `mode` | `auto` | `auto` runs a background probe when due; `nudge` only reminds |
 | `queries` | `3` | ephemeral forks per probe (1–3; 3 is calibrated at 100% CV accuracy) |
 | `parallel` | `true` | run the forks concurrently |
@@ -262,7 +273,6 @@ code; the only traffic is Codex's own inference for the forks.
 python3 -m unittest discover -s tests -v   # scanner, verdicts, scheduler, offline end-to-end via tests/fake_codex.py
 python3 -m unittest tests.test_parity -v   # the Python scorer must match ModelTrace's JS core to 1e-9 (needs node)
 ./bin/nerfed selftest
-python3 tools/make_pet.py                  # regenerate the pet spritesheet (pure Python)
 ```
 
 Layout: `plugin/` is the Codex plugin (`.codex-plugin/plugin.json`, `skills/is-gpt-nerfed/`, `assets/`),
@@ -270,7 +280,7 @@ Layout: `plugin/` is the Codex plugin (`.codex-plugin/plugin.json`, `skills/is-g
 menu bar app. CI runs the Python tests on macOS and Linux with Python 3.9 and 3.12.
 
 Contributions welcome: new detection signals, bank updates from upstream ModelTrace (keep `provenance.json` honest),
-Windows/Linux support, translations of the pet's lines. Please keep the panel to its two type sizes and no icons.
+Windows/Linux support, translations of Inspector Astra's lines. Please keep the panel to its two type sizes and no icons.
 
 ## Credits
 
@@ -278,5 +288,7 @@ Windows/Linux support, translations of the pet's lines. Please keep the panel to
   (`plugin/assets/modeltrace/unified_bank.json`, provenance in `provenance.json`), the probe prompts, and ModelTrace
   Guard's fork-and-verify sequence which this plugin follows.
 - [hlwy-ai-checker](https://github.com/hanlinwenyuan/hlwy-ai-checker) for first using random-number bias to check API channels.
+- [simple-term-menu](https://github.com/IngoMeyer441/simple-term-menu) (Ingo Meyer, MIT), vendored for the interactive
+  thread picker in `nerfed probe now`.
 
 MIT license.

@@ -188,7 +188,7 @@ struct PanelView: View {
             if inst.codexFound == false {
                 setupRow("Codex is not installed on this Mac. Install the Codex app, then reopen this panel.", button: nil)
             } else if inst.pluginEnabled == false {
-                setupRow("The plugin is not registered with Codex yet. Install adds the bundled plugin, the pet and hook trust.",
+                setupRow("The plugin is not registered with Codex yet. Install adds the bundled plugin and records hook trust.",
                          button: store.installing ? nil : "Install") { Task { await store.installPlugin() } }
             } else if s.hooks?.state == "untrusted" {
                 setupRow("Codex has not been told to trust the plugin's hooks, so nothing runs in your threads yet.",

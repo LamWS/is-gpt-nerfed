@@ -1,6 +1,6 @@
 #!/bin/sh
-# is-gpt-nerfed installer — registers the plugin with Codex (desktop app or CLI), installs the pet, offers to
-# trust the plugin's hooks (Codex skips untrusted hooks), runs doctor.
+# is-gpt-nerfed installer — registers the plugin with Codex (desktop app or CLI), offers to trust the plugin's
+# hooks (Codex skips untrusted hooks), runs doctor.
 # Usage: ./install.sh [--trust-hooks | --no-trust]
 #        (set CODEX_BIN=/path/to/codex if codex is not on PATH and not in the ChatGPT app)
 set -eu

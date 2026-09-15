@@ -26,6 +26,7 @@ final class Store {
     private var pendingProbes: [String: Date] = [:]
     private var pendingFresh: Date?
     private let pendingTimeout: TimeInterval = 45
+    private var lastHeartbeat = Date.distantPast
 
     var isAlert: Bool { (snapshot?.overall.downgraded ?? 0) > 0 }
     var isWarn: Bool { !isAlert && (snapshot?.overall.suspicious ?? 0) > 0 }
@@ -61,6 +62,13 @@ final class Store {
             if key != lastStatusKey {
                 lastStatusKey = key
                 appLog.notice("status \(snap.overall.status, privacy: .public): \(snap.overall.message, privacy: .public) · hooks \(snap.hooks?.state ?? "?", privacy: .public) · desktop loaded \(snap.hooks?.desktopLoaded ?? false, privacy: .public)")
+            }
+            // Fresh-session heartbeat: the hooks fire it while threads are active; the app covers idle periods.
+            if snap.freshDue == true, snap.globalRunning != true, pendingFresh == nil, !demo,
+               Date().timeIntervalSince(lastHeartbeat) > 300 {
+                lastHeartbeat = Date()
+                appLog.notice("fresh-session heartbeat due; starting a fresh probe")
+                probeFresh()
             }
         } catch {
             if lastError != error.localizedDescription {
@@ -129,7 +137,7 @@ final class Store {
         Task { try? await Task.sleep(for: .seconds(3)); await refresh() }
     }
 
-    /// First run from a downloaded .app: register the bundled plugin with Codex, install the pet, trust the hooks.
+    /// First run from a downloaded .app: register the bundled plugin with Codex and trust the hooks.
     func installPlugin() async {
         installing = true
         defer { installing = false }

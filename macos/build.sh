@@ -51,7 +51,7 @@ case "${1:-}" in
     mkdir -p "$HOME/Applications"
     pkill -x IsGPTNerfed 2>/dev/null || true
     rm -rf "$DEST" && cp -R "$APP" "$DEST"
-    open "$DEST"
+    for i in 1 2 3 4 5; do open "$DEST" 2>/dev/null && break; sleep 1; done   # LaunchServices can lag right after pkill
     echo "installed to $DEST and launched (menu bar); enable 'Launch at login' in the panel's settings" ;;
   --zip)
     VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$HERE/Info.plist")"

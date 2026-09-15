@@ -17,4 +17,7 @@ First public release.
 - Activity log (`nerfed log`), report, explain, evidence, audit.
 - Menu bar app for macOS 26 (Liquid Glass): status, fresh session, active threads with verdicts and evidence,
   settings, report; red paw on a confirmed downgrade, orange when suspicious. Screenshot mode hides thread titles.
-- Codex pet "Inspector Astra" for `/pet`.
+  The plugin is bundled inside the app, which installs it into Codex on first run.
+- `nerfed probe now` opens an interactive session picker (vendored simple-term-menu) when run from a terminal.
+- Fresh-session heartbeat (`fresh_frequency`): probe a brand-new session every N minutes regardless of activity.
+- Hooks are fail-safe: the entry point never exits non-zero, and reinstalls keep previous version paths resolvable.

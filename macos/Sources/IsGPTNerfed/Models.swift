@@ -11,6 +11,7 @@ struct Snapshot: Codable {
     var hooksLastEventAgo: String?
     var hooks: HooksInfo?
     var install: InstallInfo?
+    var freshDue: Bool?
     var overall: Overall
     var defaultModel: String?
     var defaultEffort: String?
@@ -35,7 +36,6 @@ struct AccountInfo: Codable {
 struct InstallInfo: Codable {
     var pluginEnabled: Bool?
     var codexFound: Bool?
-    var petInstalled: Bool?
     var marketplaceRoot: String?
     var bundled: Bool?
 }
@@ -81,6 +81,7 @@ struct DGCConfig: Codable {
     var mismatchConfidence: Double?
     var confirmUncertain: Bool?
     var hideTitles: Bool?
+    var freshFrequency: String?
     var petName: String
 }
 

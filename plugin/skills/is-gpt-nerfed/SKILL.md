@@ -23,7 +23,7 @@ metadata:
 
 ## Relaying verdicts and halts
 
-- When hook context from is-gpt-nerfed says "tell the user verbatim", say it first, as the pet, then continue.
+- When hook context from is-gpt-nerfed says "tell the user verbatim", say it first, as Inspector Astra, then continue.
 - If tools are being denied because `halt_on_mismatch` is on, stop working, summarise the verdict, and wait. Only run `<nerfed> resume --thread <id>` after the user explicitly asks to continue.
 - Useful for the user: `<nerfed> report`, `<nerfed> explain <probe-id>`, `<nerfed> explain --method`, `<nerfed> config set frequency turns:8|30m|manual`, `<nerfed> config set halt_on_mismatch true`.
 
@@ -31,4 +31,4 @@ metadata:
 
 - One probe at a time; do not rerun to get a nicer verdict.
 - Do not edit files under `~/.codex/is-gpt-nerfed/`.
-- Do not grade or interpret the numbers yourself; the script's verdict is the only verdict. Do not argue with the pet.
+- Do not grade or interpret the numbers yourself; the script's verdict is the only verdict. Do not argue with Inspector Astra.
