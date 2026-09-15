@@ -2143,6 +2143,19 @@ def update_status(cfg: dict | None = None) -> dict:
             "enabled": bool((cfg if cfg is not None else load_config()).get("check_updates", True))}
 
 
+def pick_release_assets(data: dict) -> tuple[str | None, str | None]:
+    """(zip url, sha256 url) from a GitHub release: the first IsGPTNerfed zip, and the checksum file named after
+    that very zip (a release also carries the dmg's checksum; the wrong one would fail every update)."""
+    assets = [a for a in (data.get("assets") or []) if isinstance(a, dict)]
+    zips = sorted((a for a in assets if str(a.get("name", "")).lower().endswith(".zip")),
+                  key=lambda a: (not str(a.get("name", "")).startswith("IsGPTNerfed"), str(a.get("name", ""))))
+    if not zips:
+        return None, None
+    want = str(zips[0].get("name")) + ".sha256"
+    sha = next((a.get("browser_download_url") for a in assets if a.get("name") == want), None)
+    return zips[0].get("browser_download_url"), sha
+
+
 def fetch_latest_release(u: dict) -> dict:
     """One request to GitHub: the latest release, its zip and its .sha256 (build.sh --zip writes both)."""
     import urllib.error
@@ -2154,14 +2167,10 @@ def fetch_latest_release(u: dict) -> dict:
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-        assets = [a for a in (data.get("assets") or []) if isinstance(a, dict)]
-        zips = sorted((a for a in assets if str(a.get("name", "")).lower().endswith(".zip")),
-                      key=lambda a: (not str(a.get("name", "")).startswith("IsGPTNerfed"), str(a.get("name", ""))))
-        sums = [a for a in assets if str(a.get("name", "")).lower().endswith(".sha256")]
+        zip_url, sha_url = pick_release_assets(data)
         rec.update(latest=str(data.get("tag_name") or "").lstrip("v") or None, name=data.get("name"),
                    url=data.get("html_url") or RELEASES_URL, published_at=data.get("published_at"),
-                   asset_url=zips[0].get("browser_download_url") if zips else None,
-                   sha256_url=sums[0].get("browser_download_url") if sums else None)
+                   asset_url=zip_url, sha256_url=sha_url)
     except urllib.error.HTTPError as e:
         rec["error"] = f"HTTP {e.code}"  # 404 while the repository is private: nothing to show
     except Exception as e:

@@ -660,6 +660,15 @@ class SnapshotReportTests(unittest.TestCase):
         self.assertFalse(snap["update"]["available"])
         os.remove(dgc.UPDATE_PATH)
 
+    def test_release_assets_pair_the_zip_with_its_own_checksum(self):
+        data = {"assets": [{"name": "IsGPTNerfed-0.4.1.dmg", "browser_download_url": "u/dmg"},
+                           {"name": "IsGPTNerfed-0.4.1.dmg.sha256", "browser_download_url": "u/dmg.sha256"},
+                           {"name": "IsGPTNerfed-0.4.1.zip", "browser_download_url": "u/zip"},
+                           {"name": "IsGPTNerfed-0.4.1.zip.sha256", "browser_download_url": "u/zip.sha256"}]}
+        self.assertEqual(dgc.pick_release_assets(data), ("u/zip", "u/zip.sha256"))
+        self.assertEqual(dgc.pick_release_assets({"assets": [{"name": "x.zip", "browser_download_url": "u/x"}]}), ("u/x", None))
+        self.assertEqual(dgc.pick_release_assets({"assets": []}), (None, None))
+
     def test_update_install_swaps_the_app_bundle(self):
         import hashlib, plistlib, zipfile
         base = os.path.join(TMP, "update-test"); os.makedirs(base, exist_ok=True)

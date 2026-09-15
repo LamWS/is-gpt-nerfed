@@ -11,10 +11,14 @@ pick() { printf '%s' "$JSON" | python3 -c '
 import json, sys
 d = json.load(sys.stdin); key = sys.argv[1]
 if key == "tag": print(d.get("tag_name") or ""); sys.exit()
-a = sorted((x for x in d.get("assets", []) if str(x.get("name", "")).lower().endswith(key)),
-           key=lambda x: (not str(x.get("name", "")).startswith("IsGPTNerfed"), str(x.get("name", ""))))
-print(a[0]["browser_download_url"] if a else "")' "$1"; }
-TAG="$(pick tag)"; ZIP_URL="$(pick .zip)"; SUM_URL="$(pick .sha256)"
+assets = d.get("assets", [])
+zips = sorted((x for x in assets if str(x.get("name", "")).lower().endswith(".zip")),
+              key=lambda x: (not str(x.get("name", "")).startswith("IsGPTNerfed"), str(x.get("name", ""))))
+if not zips: print(""); sys.exit()
+if key == "zip": print(zips[0]["browser_download_url"]); sys.exit()
+want = zips[0]["name"] + ".sha256"   # the zip'"'"'s own checksum file, never another asset'"'"'s
+print(next((x["browser_download_url"] for x in assets if x.get("name") == want), ""))' "$1"; }
+TAG="$(pick tag)"; ZIP_URL="$(pick zip)"; SUM_URL="$(pick sha256)"
 [ -n "$ZIP_URL" ] || { echo "release $TAG has no zip attached" >&2; exit 1; }
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 echo "downloading IsGPTNerfed $TAG …"
