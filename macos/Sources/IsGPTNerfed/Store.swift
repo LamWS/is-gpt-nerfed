@@ -187,8 +187,15 @@ final class Store {
         if let u = URL(string: s) { NSWorkspace.shared.open(u) }
     }
 
+    /// Open the thread's folder in Finder. (`selectFile(nil, inFileViewerRootedAtPath:)` only activated Finder and
+    /// left whatever window was in front, so it looked like the wrong folder.)
     func reveal(_ path: String) {
-        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path)
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue else {
+            appLog.error("reveal: folder missing \(path, privacy: .public)")
+            return
+        }
+        NSWorkspace.shared.open(URL(fileURLWithPath: path, isDirectory: true))
     }
 
     func setLaunchAtLogin(_ enabled: Bool) {

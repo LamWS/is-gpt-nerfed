@@ -111,10 +111,10 @@ The app also logs to the unified log (Console.app, subsystem `is-gpt-nerfed`).
 
 ## Release
 
-Tag releases `vX.Y.Z` and attach the zip: the app asks GitHub once a day for the latest release tag
+Tag releases `vX.Y.Z` and attach the zip: the app asks GitHub every 10 minutes for the latest release tag
 (`nerfed update-check`, result in `~/.codex/is-gpt-nerfed/update.json`, `check_updates` to switch it off) and shows
-"vX.Y.Z is out · update" in the footer, with one notification per new version. While the repository is private the
-check gets a 404 and stays silent.
+"vX.Y.Z is out · update" in the footer, with one notification per new version. A failed check (offline, or a 404
+while the repository is private) is recorded in update.json and shown nowhere.
 
 ```bash
 ./macos/build.sh --zip                      # dist/IsGPTNerfed-<version>.zip + .sha256

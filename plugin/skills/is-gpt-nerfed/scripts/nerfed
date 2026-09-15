@@ -58,7 +58,7 @@ HOOKS_STATUS_PATH = os.path.join(NERFED_HOME, "hooks_status.json")
 UPDATE_PATH = os.path.join(NERFED_HOME, "update.json")
 RELEASES_API = "https://api.github.com/repos/kiyoakii/is-gpt-nerfed/releases/latest"
 RELEASES_URL = "https://github.com/kiyoakii/is-gpt-nerfed/releases"
-UPDATE_INTERVAL_S = 86400
+UPDATE_INTERVAL_S = 600  # every 10 minutes while the app is open; well inside GitHub's unauthenticated 60/hour
 STATE_PATH = os.path.join(NERFED_HOME, "state.json")
 UNKNOWN_ACCOUNT = "unknown"
 BANK_PATH = os.path.join(PLUGIN_ROOT, "assets", "modeltrace", "unified_bank.json")
@@ -88,7 +88,7 @@ DEFAULT_CONFIG = {
     "halt_on_mismatch": False,       # Guard-style: deny work tools after a mismatch until `nerfed resume`
     "mismatch_confidence": 0.8,      # MISMATCH needs p(top) ≥ this, p(declared) ≤ 1-this and a score margin ≥ 0.5σ
     "confirm_uncertain": False,      # opt in: a SUSPICIOUS first round triggers one more round (three more answers)
-    "check_updates": True,           # once a day, one request to GitHub for the latest release tag; off = no network at all
+    "check_updates": True,           # every 10 min, one request to GitHub for the latest release tag; off = no network at all
     "hide_titles": False,            # panel shows "Thread 1…N" and hides the account label (screenshot mode)
     "fresh_frequency": "manual",     # heartbeat for the fresh-session probe: "30m", "2h" … (time only; "manual" = off)
     "codex_bin": None,
@@ -2143,13 +2143,14 @@ def update_status(cfg: dict | None = None) -> dict:
 
 
 def maybe_check_updates(cfg: dict) -> dict:
-    """Once a day, and never from tests, fetch the latest release tag in a background process."""
+    """Every UPDATE_INTERVAL_S, and never from tests, fetch the latest release tag in a background process. A failed
+    check is recorded in update.json only; the panel shows nothing for it."""
     status = update_status(cfg)
     if status["enabled"] and not os.environ.get("NERFED_NO_UPDATE_CHECK"):
         u = read_json(UPDATE_PATH, {}) or {}
         checked = (parse_iso(u.get("checked")) if u.get("checked") else None) or 0
         started = float(u.get("started_ts") or 0)
-        if now() - checked > UPDATE_INTERVAL_S and now() - started > 600:
+        if now() - checked > UPDATE_INTERVAL_S and now() - started > 120:
             write_json(UPDATE_PATH, {**u, "started_ts": now()})
             try:
                 subprocess.Popen([sys.executable, DGC_BIN, "update-check"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -2945,7 +2946,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("teardown", help="unregister the plugin (used by uninstall.sh)")
     s.add_argument("--purge", action="store_true", help="also delete the ledger")
     s.set_defaults(fn=cmd_teardown)
-    s = sub.add_parser("update-check", help="ask GitHub for the latest release once (the app does this daily while check_updates is on)")
+    s = sub.add_parser("update-check", help="ask GitHub for the latest release once (the app does this every 10 min while check_updates is on)")
     s.set_defaults(fn=cmd_update_check)
     s = sub.add_parser("doctor", help="check the installation; --fork also creates a real ephemeral fork (no inference)")
     s.add_argument("--fork", action="store_true")

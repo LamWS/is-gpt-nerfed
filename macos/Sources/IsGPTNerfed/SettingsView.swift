@@ -56,7 +56,7 @@ struct SettingsView: View {
             Group(title: "App") {
                 row("Hide thread titles and account (for screenshots)") { toggle("hide_titles", cfg?.hideTitles ?? false) }
                 RowSeparator()
-                row("Check for updates once a day") { toggle("check_updates", cfg?.checkUpdates ?? true) }
+                row("Check for updates") { toggle("check_updates", cfg?.checkUpdates ?? true) }
                 RowSeparator()
                 row("Launch at login") {
                     if plain {

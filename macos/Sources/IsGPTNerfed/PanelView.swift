@@ -545,7 +545,9 @@ struct ThreadRow: View {
                 Button(thread.lastFailure?.retryable == true ? "Retry the probe" : "Probe now") { store.probe(thread) }
             }
             if let r = thread.reportText { Button("Copy report") { store.copy(r) } }
-            if let cwd = thread.cwd, !cwd.isEmpty { Button("Reveal folder in Finder") { store.reveal(cwd) } }
+            if let cwd = thread.cwd, !cwd.isEmpty, FileManager.default.fileExists(atPath: cwd) {
+                Button("Open folder in Finder") { store.reveal(cwd) }
+            }
         }
     }
 

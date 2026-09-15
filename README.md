@@ -104,8 +104,8 @@ probed again.
 
 Reads `~/.codex` (thread records, models cache; `auth.json` only for an account hash and a masked e-mail). Writes
 `~/.codex/is-gpt-nerfed` (probes, verdicts, `log.jsonl`). The forks are ordinary Codex inference under your account.
-The only network request of its own is one a day to GitHub for the latest release tag; switch it off in Settings and
-it makes none.
+The only network request of its own is one to GitHub every ten minutes for the latest release tag, while the app is
+open; switch it off in Settings and it makes none.
 
 ## Credits
 
