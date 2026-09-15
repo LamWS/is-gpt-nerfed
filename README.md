@@ -1,16 +1,16 @@
 <p align="center"><img src="docs/social-preview.png" width="880" alt="is-gpt-nerfed: shrinkflation detector for Codex"></p>
 
-<p align="center"><img src="docs/nerfed-sticker.png" width="220" alt=""></p>
-
 You pick a model in Codex. This tells you whether that model is actually the one answering, and says so when it isn't:
 
-> 🎉 Congrats! You've been nerfed! You asked for gpt-6-astra; the fingerprint says gpt-5.6-luna (91%). Enjoy the discount you didn't ask for.
+<p align="center">
+  <img src="docs/nerfed-sticker.png" width="220" alt="">
+  <br>🎉 Congrats! You've been nerfed! You asked for gpt-6-astra; the fingerprint says gpt-5.6-luna (91%). Enjoy the discount you didn't ask for.
+</p>
 
 <p align="center">
-  <img src="docs/panel.png" width="32%" align="top" alt="Menu bar panel: status, active sessions with verdicts, fresh-session probe">
-  <img src="docs/panel-detail.png" width="32%" align="top" alt="A session opened in place: fingerprint, earlier probes, evidence">
-  <img src="docs/panel-settings.png" width="32%" align="top" alt="Settings">
-  <br><sub>The panel · a session opened in place · Settings</sub>
+  <img src="docs/panel.png" width="48%" align="top" alt="Menu bar panel: status, active sessions with verdicts, fresh-session probe">
+  <img src="docs/panel-detail.png" width="48%" align="top" alt="A session opened in place: fingerprint, earlier probes, evidence">
+  <br><sub>The panel · a session opened in place</sub>
 </p>
 <p align="center">
   <img src="docs/face-ok.png" width="72" alt="all clear"> <img src="docs/face-warn.png" width="72" alt="suspicious"> <img src="docs/face-alert.png" width="72" alt="nerfed">

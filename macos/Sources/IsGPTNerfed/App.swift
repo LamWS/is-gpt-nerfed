@@ -48,7 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Headless self-portraits for the README (ImageRenderer cannot composite Liquid Glass, so the panel renders
-    /// with its flat fallback). Also writes the three menu bar faces next to the panel image.
+    /// with its flat fallback): the panel, and the panel with a session opened.
     private func render(to path: String) {
         Task { @MainActor in
             let store = Store.shared
@@ -56,7 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 await store.refresh()
                 try? await Task.sleep(for: .milliseconds(250))
             }
-            let variants: [(String, Bool, String?)] = [("", false, nil), ("-settings", true, nil), ("-detail", false, "payments")]
+            let variants: [(String, Bool, String?)] = [("", false, nil), ("-detail", false, "payments")]
             for (suffix, settings, open) in variants {
                 let renderer = ImageRenderer(content: PanelView(showSettings: settings, open: open).environment(store).environment(\.plainRendering, true)
                                                 .frame(width: 440).padding(8).background(Color(nsColor: .windowBackgroundColor)))
@@ -64,19 +64,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if let img = renderer.nsImage, let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
                    let png = rep.representation(using: .png, properties: [:]) {
                     try? png.write(to: URL(fileURLWithPath: path.replacingOccurrences(of: ".png", with: "\(suffix).png")))
-                }
-            }
-            for (suffix, alert, warn) in [("icon-normal", false, false), ("icon-warn", false, true), ("icon-alert", true, false)] {
-                let face = Text(MenuBarFace.face(alert: alert, warn: warn, running: false))
-                    .font(.system(size: 12, weight: .semibold, design: .rounded))
-                    .foregroundStyle(alert ? Color.red : (warn ? Color.orange : Color.white))
-                    .frame(width: 56, height: 22)
-                    .background(Color(white: 0.12))
-                let renderer = ImageRenderer(content: face)
-                renderer.scale = 2
-                if let img = renderer.nsImage, let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
-                   let png = rep.representation(using: .png, properties: [:]) {
-                    try? png.write(to: URL(fileURLWithPath: path.replacingOccurrences(of: ".png", with: "-\(suffix).png")))
                 }
             }
             NSApplication.shared.terminate(nil)
