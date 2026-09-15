@@ -11,6 +11,7 @@ struct Snapshot: Codable {
     var hooksLastEventAgo: String?
     var hooks: HooksInfo?
     var install: InstallInfo?
+    var update: UpdateInfo?
     var freshDue: Bool?
     var overall: Overall
     var defaultModel: String?
@@ -35,6 +36,17 @@ struct AccountInfo: Codable {
     var switchedAt: String?
     var switchedAgo: String?
     var previousLabel: String?
+}
+
+/// The daily release check (one request to GitHub for the latest tag; `nerfed update-check`).
+struct UpdateInfo: Codable {
+    var current: String?
+    var latest: String?
+    var available: Bool?
+    var url: String?
+    var checkedAgo: String?
+    var error: String?
+    var enabled: Bool?
 }
 
 /// Whether the plugin (bundled in this app or from a checkout) is registered with Codex.
@@ -88,6 +100,7 @@ struct DGCConfig: Codable {
     var confirmUncertain: Bool?
     var hideTitles: Bool?
     var freshFrequency: String?
+    var checkUpdates: Bool?
 }
 
 struct ThreadInfo: Codable, Identifiable {

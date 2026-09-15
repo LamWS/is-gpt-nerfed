@@ -326,7 +326,7 @@ struct PanelView: View {
                             Text("Never probed · a new session, no thread context").font(Type.text).foregroundStyle(.secondary)
                         }
                     } report: {
-                        ReportLines(probes: history, evidence: [], failure: failure, reportText: snap?.globalReportText)
+                        ReportLines(probes: history, evidence: [], failure: failure)
                     }
                     Spacer(minLength: 8)
                     if !running {
@@ -349,7 +349,10 @@ struct PanelView: View {
         HStack(spacing: 16) {
             TextButton(title: showSettings ? "Done" : "Settings") { withAnimation(.snappy(duration: 0.25)) { showSettings.toggle() } }
             Spacer()
-            if let v = store.snapshot?.version {
+            if let u = store.snapshot?.update, u.available == true, let latest = u.latest {
+                TextButton(title: "v\(latest) is out · update", color: .primary) { store.openURL(u.url ?? "https://github.com/kiyoakii/is-gpt-nerfed/releases") }
+                    .help("A newer release is on GitHub. Download the zip and replace the app; the plugin inside updates with it.")
+            } else if let v = store.snapshot?.version {
                 Text("v\(v)" + (store.snapshot?.demo == true ? " · sample data" : "")).font(Type.text).foregroundStyle(.tertiary)
             }
             TextButton(title: "Quit") { NSApplication.shared.terminate(nil) }
@@ -396,13 +399,12 @@ struct SwapLines<Summary: View, Report: View>: View {
     }
 }
 
-/// The report: last verdict, fingerprint, earlier probes, evidence with what was reverted. Text only.
+/// The report: last verdict, fingerprint, earlier probes, evidence with what was reverted. Text only; Copy report is in the row's context menu.
 struct ReportLines: View {
     @Environment(Store.self) private var store
     let probes: [ProbeSummary]
     let evidence: [EvidenceInfo]
     var failure: ProbeSummary? = nil
-    let reportText: String?
 
     static func hasContent(probes: [ProbeSummary], evidence: [EvidenceInfo], failure: ProbeSummary? = nil) -> Bool {
         !probes.isEmpty || !evidence.isEmpty || failure != nil
@@ -442,12 +444,6 @@ struct ReportLines: View {
                 Text(e.text + (e.ago.map { " · \($0)" } ?? "") + (on ? "" : " · reverted"))
                     .foregroundStyle(on ? (e.severity == "hard" ? Color.red : (e.severity == "soft" ? Color.orange : Color.green)) : Color.secondary)
                     .lineLimit(2)
-            }
-            if let reportText {
-                HStack {
-                    Spacer()
-                    TextButton(title: "Copy report") { store.copy(reportText) }
-                }
             }
         }
         .font(Type.text)
@@ -535,7 +531,7 @@ struct ThreadRow: View {
                                 }
                             }
                         } report: {
-                            ReportLines(probes: history, evidence: thread.evidence ?? [], failure: thread.lastFailure, reportText: thread.reportText)
+                            ReportLines(probes: history, evidence: thread.evidence ?? [], failure: thread.lastFailure)
                         }
                     }
                 }

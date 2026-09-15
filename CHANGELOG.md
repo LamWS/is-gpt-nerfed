@@ -7,6 +7,10 @@
   else moves. Right-click for Probe, Copy report, Reveal folder. Settings is a page of its own. Fresh session sits
   below the threads; the header is the chip face with one short line per fact; the panel is a little narrower.
   The Report window is gone (the report lives in the rows; `nerfed report` remains).
+- Update check: once a day the app asks GitHub for the latest release tag (one request; `check_updates` switches it
+  off) and shows "vX.Y.Z is out · update" in the footer, with one notification per new version.
+- Copy report moved to the row's right-click menu. The prompt-language row left Settings: the probes use
+  ModelTrace's own zh and en prompt texts, its default; `languages` stays as a config key.
 - Upgraded: a move to a better model (a rollout such as gpt-5.6-sol → gpt-6-sol) is a state of its own, shown in green
   and notified, from the passive scanner or the fingerprint. Better or worse is decided by `compare_models`, not a
   fixed list: Codex's catalog succession pointer, hidden internal models, the generation and size tier in the slug,

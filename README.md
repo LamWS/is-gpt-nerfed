@@ -52,7 +52,8 @@ Match is silent.
 
 **App, macOS 26.** Download the zip from [Releases](https://github.com/kiyoakii/is-gpt-nerfed/releases), move
 IsGPTNerfed to Applications, open it (right-click → Open the first time), click the face in the menu bar, press
-**Install**. That registers the bundled plugin with Codex and trusts its hooks. Done.
+**Install**. That registers the bundled plugin with Codex and trusts its hooks. Done. When a newer release is out,
+the panel's footer says so and a notification arrives once; download the new zip and replace the app.
 
 **Without the app, any macOS.**
 
@@ -102,8 +103,9 @@ probed again.
 ## Privacy
 
 Reads `~/.codex` (thread records, models cache; `auth.json` only for an account hash and a masked e-mail). Writes
-`~/.codex/is-gpt-nerfed` (probes, verdicts, `log.jsonl`). Makes no network requests of its own; the forks are
-ordinary Codex inference under your account.
+`~/.codex/is-gpt-nerfed` (probes, verdicts, `log.jsonl`). The forks are ordinary Codex inference under your account.
+The only network request of its own is one a day to GitHub for the latest release tag; switch it off in Settings and
+it makes none.
 
 ## Credits
 

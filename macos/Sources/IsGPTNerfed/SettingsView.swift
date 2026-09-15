@@ -13,7 +13,6 @@ struct SettingsView: View {
         ("manual", "Manually"), ("15m", "Every 15 minutes"), ("30m", "Every 30 minutes"), ("1h", "Every hour"), ("2h", "Every 2 hours"), ("6h", "Every 6 hours"),
     ]
     private let modes: [(String, String)] = [("auto", "Probe in the background"), ("nudge", "Only remind me")]
-    private let languages: [(String, String)] = [("zh,en", "Chinese and English"), ("zh", "Chinese"), ("en", "English")]
     private let confidences: [(Double, String)] = [(0.7, "70%"), (0.8, "80%"), (0.9, "90%"), (0.95, "95%")]
 
     var body: some View {
@@ -30,8 +29,6 @@ struct SettingsView: View {
                     segments(["1", "2", "3"], selected: String(cfg?.queries ?? 3)) { v in Task { await store.setConfig("queries", v) } }
                         .frame(width: 110)
                 }
-                RowSeparator()
-                row("Prompt language") { picker((cfg?.languages ?? ["zh", "en"]).joined(separator: ","), languages, key: "languages") }
                 RowSeparator()
                 row("Run the forks in parallel") { toggle("parallel", cfg?.parallel ?? true) }
             }
@@ -58,6 +55,8 @@ struct SettingsView: View {
             }
             Group(title: "App") {
                 row("Hide thread titles and account (for screenshots)") { toggle("hide_titles", cfg?.hideTitles ?? false) }
+                RowSeparator()
+                row("Check for updates once a day") { toggle("check_updates", cfg?.checkUpdates ?? true) }
                 RowSeparator()
                 row("Launch at login") {
                     if plain {

@@ -111,6 +111,11 @@ The app also logs to the unified log (Console.app, subsystem `is-gpt-nerfed`).
 
 ## Release
 
+Tag releases `vX.Y.Z` and attach the zip: the app asks GitHub once a day for the latest release tag
+(`nerfed update-check`, result in `~/.codex/is-gpt-nerfed/update.json`, `check_updates` to switch it off) and shows
+"vX.Y.Z is out · update" in the footer, with one notification per new version. While the repository is private the
+check gets a 404 and stays silent.
+
 ```bash
 ./macos/build.sh --zip                      # dist/IsGPTNerfed-<version>.zip + .sha256
 gh release create v<version> dist/*.zip dist/*.sha256 --prerelease

@@ -15,6 +15,7 @@ from unittest import mock
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TMP = tempfile.mkdtemp(prefix="dgc-test-")
 os.environ["NERFED_HOME"] = os.path.join(TMP, "ledger")
+os.environ["NERFED_NO_UPDATE_CHECK"] = "1"  # tests never touch the network
 os.environ["CODEX_HOME"] = os.path.join(TMP, "codex-home")
 os.makedirs(os.environ["CODEX_HOME"], exist_ok=True)
 for var in ("CODEX_THREAD_ID", "CODEX_SESSION_ID", "CODEX_SANDBOX_NETWORK_DISABLED", "NERFED_PROBE_PROCESS"):
@@ -641,6 +642,23 @@ class SnapshotReportTests(unittest.TestCase):
         self.assertEqual(after, before, "the SessionStart hook must not crash")
         events = [e for e in dgc.iter_jsonl(os.path.join(dgc.NERFED_HOME, "log.jsonl")) if e.get("kind") == "session_start"]
         self.assertTrue(events and events[-1].get("sid") == "start-thread-1" and events[-1].get("session_kind") == "main")
+
+    def test_update_check_status_and_versions(self):
+        self.assertEqual(dgc.version_tuple("v0.4.2"), (0, 4, 2))
+        self.assertGreater(dgc.version_tuple("0.10.0"), dgc.version_tuple("0.9.9"))
+        self.assertEqual(dgc.version_tuple(None), (0,))
+        dgc.write_json(dgc.UPDATE_PATH, {"checked": dgc.iso(), "latest": "99.0.0", "url": "https://example.test/rel", "error": None})
+        u = dgc.update_status({"check_updates": True})
+        self.assertTrue(u["available"])
+        self.assertEqual((u["latest"], u["url"], u["current"]), ("99.0.0", "https://example.test/rel", dgc.VERSION))
+        dgc.write_json(dgc.UPDATE_PATH, {"checked": dgc.iso(), "latest": dgc.VERSION, "error": "HTTP 404"})
+        u = dgc.update_status({"check_updates": False})
+        self.assertFalse(u["available"])
+        self.assertFalse(u["enabled"])
+        snap = json.loads(run_cli(["snapshot", "--json"])[1])
+        self.assertIn("update", snap)
+        self.assertFalse(snap["update"]["available"])
+        os.remove(dgc.UPDATE_PATH)
 
     def test_upgrade_shows_as_good_news(self):
         snap = json.loads(run_cli(["snapshot", "--json", "--demo"])[1])

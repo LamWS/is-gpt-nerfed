@@ -183,6 +183,10 @@ final class Store {
         appLog.notice("report copied to the clipboard")
     }
 
+    func openURL(_ s: String) {
+        if let u = URL(string: s) { NSWorkspace.shared.open(u) }
+    }
+
     func reveal(_ path: String) {
         NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path)
     }
