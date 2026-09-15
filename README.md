@@ -93,7 +93,9 @@ git clone https://github.com/<owner>/is-gpt-nerfed ~/is-gpt-nerfed && cd ~/is-gp
 1. registers this folder as a local plugin marketplace and installs the plugin (`codex plugin marketplace add` +
    `codex plugin add`, with a fallback that appends two blocks to `~/.codex/config.toml`). Codex keeps its own copy of
    the plugin under `~/.codex/plugins/cache/` and runs hooks from there, so **after changing the code run
-   `./install.sh` again**;
+   `./install.sh` again**. A running Codex app keeps using the hook definitions it already loaded, so the installer
+   leaves the previous version's path resolvable and the hook command itself exits quietly when its file is gone:
+   a reinstall never blocks tool calls in your open threads;
 2. installs the pet for `/pet`;
 3. asks to **trust the plugin's hooks** (`--trust-hooks` skips the question, `--no-trust` leaves them alone). Codex never
    runs a hook it has not been told to trust, and it does not tell you: trust is a per-definition hash under

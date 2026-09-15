@@ -2173,11 +2173,33 @@ def cmd_setup(args) -> int:
         print(f"codex: {cb}")
         rc, out = run([cb, "plugin", "marketplace", "add", root])
         print(f"  marketplace add → rc={rc} {out[:300]}")
+        cache_root = os.path.join(CODEX_HOME, "plugins", "cache", PLUGIN_NAME, PLUGIN_NAME)
+        previous = [d for d in (os.listdir(cache_root) if os.path.isdir(cache_root) else []) if not d.startswith(".")]
         if plugin_enabled_in_config():  # reinstall: drop the cached copy so Codex picks up the current code
             run([cb, "plugin", "remove", f"{PLUGIN_NAME}@{MARKETPLACE_NAME}"])
         rc2, out2 = run([cb, "plugin", "add", f"{PLUGIN_NAME}@{MARKETPLACE_NAME}"])
         print(f"  plugin add → rc={rc2} {out2[:300]}")
         ok_cli = rc2 == 0 or plugin_enabled_in_config()
+        # A running Codex app keeps the hook definitions it loaded, which point at the previous cache directory.
+        # Keep every earlier version path resolvable (as a symlink to the new copy) so its hooks do not fail and
+        # block tool calls until the app reloads.
+        current = os.path.join(cache_root, VERSION)
+        if os.path.isdir(current):
+            for v in previous:
+                old = os.path.join(cache_root, v)
+                if v != VERSION and not os.path.exists(old):
+                    try:
+                        os.symlink(current, old)
+                        print(f"  kept previous version path {v} → {VERSION} for the running Codex app")
+                    except OSError as e:
+                        print(f"  could not link {v}: {e}")
+            stable = os.path.join(NERFED_HOME, "plugin")  # fallback the hook command uses when PLUGIN_ROOT is stale
+            try:
+                if os.path.islink(stable) or os.path.exists(stable):
+                    os.remove(stable) if os.path.islink(stable) else shutil.rmtree(stable)
+                os.symlink(current, stable)
+            except OSError as e:
+                print(f"  could not update {stable}: {e}")
     if not ok_cli:
         print("falling back to manual registration in ~/.codex/config.toml")
         text = config_toml_text()
@@ -2280,7 +2302,11 @@ def cmd_doctor(args) -> int:
         hooks = m.get("hooks") or ((m.get("extensions") or {}).get("com.openai") or {}).get("hooks")
         text = json.dumps(hooks) if hooks else ""
         check(bool(hooks), f"hooks declared in {os.path.relpath(p, PLUGIN_ROOT)}")
-        check("${PLUGIN_ROOT" in text, "hook commands locate the plugin through ${PLUGIN_ROOT} (exported by Codex)")
+        check("${PLUGIN_ROOT" in text and "exit 0" in text,
+              "hook commands locate the plugin through ${PLUGIN_ROOT} and never block when the file is missing")
+    stable = os.path.join(NERFED_HOME, "plugin")
+    check(os.path.exists(os.path.join(stable, "skills", "is-gpt-nerfed", "scripts", "nerfed")) if os.path.exists(CONFIG_PATH) else True,
+          f"fallback plugin path {stable} → {os.path.realpath(stable) if os.path.exists(stable) else 'missing'}", "run ./install.sh")
     text = config_toml_text()
     check(plugin_enabled_in_config(), f'[plugins."{PLUGIN_NAME}@…"] enabled = true in config.toml', "run ./install.sh")
     check(not re.search(r"\[features\][^\[]*hooks\s*=\s*false", text), "hooks feature not disabled in config.toml")

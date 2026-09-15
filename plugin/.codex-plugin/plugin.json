@@ -24,7 +24,7 @@
           "hooks": [
             {
               "type": "command",
-              "command": "sh -c 'python3 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/skills/is-gpt-nerfed/scripts/nerfed\" hook --event SessionStart'",
+              "command": "sh -c 'command -v python3 >/dev/null 2>&1 || exit 0; P=\"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}\"; S=\"$P/skills/is-gpt-nerfed/scripts/nerfed\"; [ -f \"$S\" ] || S=\"$HOME/.codex/is-gpt-nerfed/plugin/skills/is-gpt-nerfed/scripts/nerfed\"; [ -f \"$S\" ] || exit 0; exec python3 \"$S\" hook --eventSessionStart'",
               "timeout": 10,
               "statusMessage": "is-gpt-nerfed: registering session"
             }
@@ -36,7 +36,7 @@
           "hooks": [
             {
               "type": "command",
-              "command": "sh -c 'python3 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/skills/is-gpt-nerfed/scripts/nerfed\" hook --event UserPromptSubmit'",
+              "command": "sh -c 'command -v python3 >/dev/null 2>&1 || exit 0; P=\"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}\"; S=\"$P/skills/is-gpt-nerfed/scripts/nerfed\"; [ -f \"$S\" ] || S=\"$HOME/.codex/is-gpt-nerfed/plugin/skills/is-gpt-nerfed/scripts/nerfed\"; [ -f \"$S\" ] || exit 0; exec python3 \"$S\" hook --eventUserPromptSubmit'",
               "timeout": 10,
               "additionalContextLimit": 4000
             }
@@ -49,7 +49,7 @@
           "hooks": [
             {
               "type": "command",
-              "command": "sh -c 'python3 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/skills/is-gpt-nerfed/scripts/nerfed\" hook --event PreToolUse'",
+              "command": "sh -c 'command -v python3 >/dev/null 2>&1 || exit 0; P=\"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}\"; S=\"$P/skills/is-gpt-nerfed/scripts/nerfed\"; [ -f \"$S\" ] || S=\"$HOME/.codex/is-gpt-nerfed/plugin/skills/is-gpt-nerfed/scripts/nerfed\"; [ -f \"$S\" ] || exit 0; exec python3 \"$S\" hook --eventPreToolUse'",
               "timeout": 5,
               "additionalContextLimit": 4000
             }
@@ -61,7 +61,7 @@
           "hooks": [
             {
               "type": "command",
-              "command": "sh -c 'python3 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/skills/is-gpt-nerfed/scripts/nerfed\" hook --event Stop'",
+              "command": "sh -c 'command -v python3 >/dev/null 2>&1 || exit 0; P=\"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}\"; S=\"$P/skills/is-gpt-nerfed/scripts/nerfed\"; [ -f \"$S\" ] || S=\"$HOME/.codex/is-gpt-nerfed/plugin/skills/is-gpt-nerfed/scripts/nerfed\"; [ -f \"$S\" ] || exit 0; exec python3 \"$S\" hook --eventStop'",
               "timeout": 20,
               "statusMessage": "is-gpt-nerfed: scanning session for silent downgrades"
             }
@@ -73,7 +73,7 @@
           "hooks": [
             {
               "type": "command",
-              "command": "sh -c 'python3 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/skills/is-gpt-nerfed/scripts/nerfed\" hook --event SessionEnd'",
+              "command": "sh -c 'command -v python3 >/dev/null 2>&1 || exit 0; P=\"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}\"; S=\"$P/skills/is-gpt-nerfed/scripts/nerfed\"; [ -f \"$S\" ] || S=\"$HOME/.codex/is-gpt-nerfed/plugin/skills/is-gpt-nerfed/scripts/nerfed\"; [ -f \"$S\" ] || exit 0; exec python3 \"$S\" hook --eventSessionEnd'",
               "timeout": 5
             }
           ]
