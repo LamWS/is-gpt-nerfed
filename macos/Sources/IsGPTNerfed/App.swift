@@ -6,7 +6,7 @@ import SwiftUI
 enum MenuBarIcon {
     static func image(alert: Bool, warn: Bool = false, running: Bool) -> NSImage {
         let name = (alert || warn) ? "pawprint.fill" : (running ? "pawprint.circle" : "pawprint")
-        let base = NSImage(systemSymbolName: name, accessibilityDescription: "does-gpt-cheat")!
+        let base = NSImage(systemSymbolName: name, accessibilityDescription: "is-gpt-nerfed")!
         let size = NSImage.SymbolConfiguration(pointSize: 15, weight: .medium)
         if alert || warn {
             let colored = size.applying(NSImage.SymbolConfiguration(paletteColors: [alert ? .systemRed : .systemOrange]))
@@ -91,7 +91,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 // MARK: - App
 
 @main
-struct DoesGPTCheatApp: App {
+struct IsGPTNerfedApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     private let store = Store.shared
 
@@ -107,7 +107,7 @@ struct DoesGPTCheatApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        Window("does-gpt-cheat report", id: "report") {
+        Window("is-gpt-nerfed report", id: "report") {
             ReportView().environment(store)
         }
         .windowResizability(.contentSize)

@@ -65,8 +65,6 @@ struct SettingsView: View {
                     }
                 }
                 RowSeparator()
-                row("Show records from other accounts") { toggle("show_other_accounts", cfg?.showOtherAccounts ?? false) }
-                RowSeparator()
                 row("Launch at login") {
                     if plain {
                         PlainSwitch(on: store.launchAtLogin)

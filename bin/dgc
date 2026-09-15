@@ -1,3 +1,0 @@
-#!/bin/sh
-# Convenience wrapper: ./bin/dgc <command> → the plugin's CLI
-exec "$(cd "$(dirname "$0")/.." && pwd)/plugin/skills/does-gpt-cheat/scripts/dgc" "$@"

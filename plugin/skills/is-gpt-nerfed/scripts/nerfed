@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""dgc — does-gpt-cheat: transparent, local detection of silent model downgrades in Codex sessions.
+"""dgc — is-gpt-nerfed: transparent, local detection of silent model downgrades in Codex sessions.
 
 Three layers, all local, nothing leaves the machine:
 
-  passive  Codex lifecycle hooks feed every turn into `dgc hook`. The session rollout (JSONL) is scanned
+  passive  Codex lifecycle hooks feed every turn into `nerfed hook`. The session rollout (JSONL) is scanned
            incrementally for silent model / reasoning-effort / context-window changes and for hidden
            internal models. Zero tokens.
   active   A ModelTrace fingerprint probe (https://github.com/xqy2006/ModelTrace, MIT): the thread is forked
@@ -12,9 +12,9 @@ Three layers, all local, nothing leaves the machine:
            with ModelTrace's calibrated fingerprint bank. Expected model ≠ fingerprint → the pet speaks up.
            Inside a `/side` conversation the model answers the same challenge directly.
   pet      Verdicts arrive as a Codex-pet card, a macOS notification, a system message in the thread and
-           (optionally) a sound. Optional Guard-style halt: deny work tools after a mismatch until `dgc resume`.
+           (optionally) a sound. Optional Guard-style halt: deny work tools after a mismatch until `nerfed resume`.
 
-State lives under $DGC_HOME (default: $CODEX_HOME/does-gpt-cheat, i.e. ~/.codex/does-gpt-cheat).
+State lives under $NERFED_HOME (default: $CODEX_HOME/is-gpt-nerfed, i.e. ~/.codex/is-gpt-nerfed).
 """
 from __future__ import annotations
 
@@ -39,26 +39,26 @@ sys.path.insert(0, HERE)
 import codex_appserver as cas  # noqa: E402
 import modeltrace_core as core  # noqa: E402
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 DGC_BIN = os.path.abspath(__file__)
 SKILL_DIR = os.path.dirname(HERE)
 PLUGIN_ROOT = os.environ.get("PLUGIN_ROOT") or os.environ.get("CLAUDE_PLUGIN_ROOT") or os.path.dirname(os.path.dirname(SKILL_DIR))
 CODEX_HOME = os.environ.get("CODEX_HOME") or os.path.join(os.path.expanduser("~"), ".codex")
-DGC_HOME = os.environ.get("DGC_HOME") or os.path.join(CODEX_HOME, "does-gpt-cheat")
-CONFIG_PATH = os.path.join(DGC_HOME, "config.json")
-EVENTS_PATH = os.path.join(DGC_HOME, "events.jsonl")
-PROBES_INDEX = os.path.join(DGC_HOME, "probes.jsonl")
-SESSIONS_DIR = os.path.join(DGC_HOME, "sessions")
-PROBES_DIR = os.path.join(DGC_HOME, "probes")
-ERRORS_PATH = os.path.join(DGC_HOME, "errors.log")
-WORKER_LOG = os.path.join(DGC_HOME, "worker.log")
+NERFED_HOME = os.environ.get("NERFED_HOME") or os.path.join(CODEX_HOME, "is-gpt-nerfed")
+CONFIG_PATH = os.path.join(NERFED_HOME, "config.json")
+EVENTS_PATH = os.path.join(NERFED_HOME, "events.jsonl")
+PROBES_INDEX = os.path.join(NERFED_HOME, "probes.jsonl")
+SESSIONS_DIR = os.path.join(NERFED_HOME, "sessions")
+PROBES_DIR = os.path.join(NERFED_HOME, "probes")
+ERRORS_PATH = os.path.join(NERFED_HOME, "errors.log")
+WORKER_LOG = os.path.join(NERFED_HOME, "worker.log")
 BANK_PATH = os.path.join(PLUGIN_ROOT, "assets", "modeltrace", "unified_bank.json")
 
-PET_ID = "does-gpt-cheat"
-PLUGIN_NAME = "does-gpt-cheat"
-MARKETPLACE_NAME = "does-gpt-cheat"
-SKILL_CMD = "$does-gpt-cheat"
-SIDE_CMD = "/side $does-gpt-cheat"
+PET_ID = "is-gpt-nerfed"
+PLUGIN_NAME = "is-gpt-nerfed"
+MARKETPLACE_NAME = "is-gpt-nerfed"
+SKILL_CMD = "$is-gpt-nerfed"
+SIDE_CMD = "/side $is-gpt-nerfed"
 APP_CODEX_BINS = [
     "/Applications/ChatGPT.app/Contents/Resources/codex",
     "/Applications/Codex.app/Contents/Resources/codex",
@@ -77,10 +77,9 @@ DEFAULT_CONFIG = {
     "notify_on_ok": False,           # also notify on MATCH verdicts
     "announce_ok": False,            # also push MATCH verdicts into the thread
     "sound": True,                   # Codex notification sound on a downgrade verdict
-    "halt_on_mismatch": False,       # Guard-style: deny work tools after a mismatch until `dgc resume`
+    "halt_on_mismatch": False,       # Guard-style: deny work tools after a mismatch until `nerfed resume`
     "mismatch_confidence": 0.8,      # MISMATCH needs p(top) ≥ this, p(declared) ≤ 1-this and a score margin ≥ 0.5σ
     "confirm_uncertain": True,       # a SUSPICIOUS first round triggers one more round before the verdict is final
-    "show_other_accounts": False,    # after switching Codex accounts, hide records made under other accounts
     "pet_name": "Inspector Astra",
     "codex_bin": None,
     "nudge_cooldown_turns": 4,
@@ -102,7 +101,7 @@ def iso(ts: float | None = None) -> str:
 
 
 def ensure_dirs() -> None:
-    for d in (DGC_HOME, SESSIONS_DIR, PROBES_DIR):
+    for d in (NERFED_HOME, SESSIONS_DIR, PROBES_DIR):
         os.makedirs(d, exist_ok=True)
 
 
@@ -148,7 +147,7 @@ def tail_jsonl(path: str, n: int) -> list:
 
 def log_error(msg: str) -> None:
     try:
-        os.makedirs(DGC_HOME, exist_ok=True)
+        os.makedirs(NERFED_HOME, exist_ok=True)
         with open(ERRORS_PATH, "a", encoding="utf-8") as f:
             f.write(f"{iso()} {msg}\n")
     except Exception:
@@ -202,8 +201,7 @@ def parse_frequency(s) -> tuple[str, int]:
 
 
 def coerce_config_value(key: str, value: str):
-    if key in ("passive", "notify", "notify_on_ok", "announce_ok", "sound", "parallel", "halt_on_mismatch", "confirm_uncertain",
-               "show_other_accounts"):
+    if key in ("passive", "notify", "notify_on_ok", "announce_ok", "sound", "parallel", "halt_on_mismatch", "confirm_uncertain"):
         return str(value).strip().lower() in ("1", "true", "yes", "on")
     if key == "mismatch_confidence":
         v = float(value)
@@ -338,8 +336,10 @@ def current_account() -> dict:
     return {"id": hashlib.sha256(str(account_id).encode()).hexdigest()[:12], "label": label, "plan": plan}
 
 
-def account_visible(record_account: str | None, current: str, show_all: bool) -> bool:
-    return show_all or not record_account or record_account == current
+def stale_for_account(record_account: str | None, current: str) -> bool:
+    """Threads are local and shared across Codex accounts, but nerfing may be per account: a verdict obtained
+    under another account says nothing about this one."""
+    return bool(record_account) and record_account != current
 
 
 def load_bank() -> dict:
@@ -601,19 +601,25 @@ def link_session(st: dict) -> None:
             st["model"] = parent["model"]
 
 
-def probe_due(st: dict, cfg: dict) -> bool:
+def probe_due(st: dict, cfg: dict, account: str | None = None) -> bool:
     try:
         kind, n = parse_frequency(cfg.get("frequency"))
     except ValueError:
         return False
     if kind == "manual":
         return False
+    # a probe made under another Codex account does not count: the thread is unverified for this account
+    switched = stale_for_account(st.get("last_probe_account"), account or current_account()["id"])
+    last_probe_turn = 0 if switched else int(st.get("last_probe_turn") or 0)
+    last_probe_ts = 0.0 if switched else float(st.get("last_probe_ts") or 0)
     if kind == "turns":
-        since_probe = st["turns"] - int(st.get("last_probe_turn") or 0)
+        since_probe = st["turns"] - last_probe_turn
         since_nudge = st["turns"] - int(st.get("last_nudge_turn") if st.get("last_nudge_turn") is not None else -999)
         cooldown = max(1, min(n, int(cfg.get("nudge_cooldown_turns") or 1)))
-        return since_probe >= n and since_nudge >= cooldown
-    last = max(float(st.get("last_probe_ts") or 0), float(st.get("last_nudge_ts") or 0), float(st.get("created_ts") or 0))
+        return (since_probe >= n or (switched and st["turns"] > 0)) and since_nudge >= cooldown
+    if switched:
+        return (now() - float(st.get("last_nudge_ts") or 0)) >= 60
+    last = max(last_probe_ts, float(st.get("last_nudge_ts") or 0), float(st.get("created_ts") or 0))
     return (now() - last) >= n * 60
 
 
@@ -635,7 +641,8 @@ def tool_command_preview(payload: dict) -> str:
 
 
 def is_dgc_command(payload: dict) -> bool:
-    return "dgc" in tool_command_preview(payload) or "does-gpt-cheat" in tool_command_preview(payload)
+    cmd = tool_command_preview(payload)
+    return "nerfed" in cmd or "is-gpt-nerfed" in cmd or "dgc" in cmd
 
 
 def codex_bin(cfg: dict | None = None) -> str | None:
@@ -655,7 +662,7 @@ def codex_bin(cfg: dict | None = None) -> str | None:
 
 LINES = {
     "MISMATCH_downgrade": [
-        "🎉 Congrats! You've been downgraded! You asked for {expected}; the fingerprint says {top} ({p:.0%}, {n}/{q} answers). Enjoy the discount you didn't ask for.",
+        "🎉 Congrats! You've been nerfed! You asked for {expected}; the fingerprint says {top} ({p:.0%}, {n}/{q} answers). Enjoy the discount you didn't ask for.",
         "Great news: your {expected} session is answering like {top} ({p:.0%}). Nobody told you, but somebody saved money. Congrats!",
     ],
     "MISMATCH_upgrade": [
@@ -665,7 +672,7 @@ LINES = {
         "Congrats! You've been… re-routed. You asked for {expected}, the fingerprint says {top} ({p:.0%}). Same tier, different brain.",
     ],
     "DOWNGRADED_HARD": [
-        "🎉 Congrats! You've been downgraded! Codex's own records say so: {detail}. No notice, no refund, no shame.",
+        "🎉 Congrats! You've been nerfed! Codex's own records say so: {detail}. No notice, no refund, no shame.",
     ],
     "MATCH": [
         "All clear: the fingerprint says {top} ({p:.0%}), which is what you asked for. The model you're paying for actually showed up. Cherish it.",
@@ -714,7 +721,7 @@ def pet_card(cfg: dict, verdict: str, quote: str, facts: list[str]) -> str:
     name = cfg.get("pet_name") or "Codex Pet"
     art = ["   (\\__/)     ", f"   ({face})     ", "   / >🔍     "]
     wrapped = wrap(quote, 64)
-    lines = [f"🐾 {name} — does-gpt-cheat verdict: {verdict}", art[0],
+    lines = [f"🐾 {name} — is-gpt-nerfed verdict: {verdict}", art[0],
              art[1] + (wrapped[0] if wrapped else ""), art[2] + (wrapped[1] if len(wrapped) > 1 else "")]
     lines.extend(" " * 14 + extra for extra in wrapped[2:])
     lines.append("")
@@ -722,7 +729,7 @@ def pet_card(cfg: dict, verdict: str, quote: str, facts: list[str]) -> str:
     return "\n".join(lines)
 
 
-def notify(cfg: dict, message: str, subtitle: str = "does-gpt-cheat", title: str | None = None) -> None:
+def notify(cfg: dict, message: str, subtitle: str = "is-gpt-nerfed", title: str | None = None) -> None:
     if not cfg.get("notify", True) or sys.platform != "darwin":
         return
     title = title or f"🐾 {cfg.get('pet_name') or 'Codex Pet'}"
@@ -907,6 +914,7 @@ def finalize_probe(rec: dict, outputs: list[dict], expected: str | None, errors:
         with locked_session(tid) as st:
             st["last_probe_ts"] = now()
             st["last_probe_turn"] = int(st.get("turns") or 0)
+            st["last_probe_account"] = (rec.get("account") or {}).get("id")
             st["probe_running"] = None
             st["requested"] = False
             st.setdefault("probes", []).append(rec["id"])
@@ -927,7 +935,7 @@ def run_fork_probe(thread_id: str, cfg: dict, queries: int | None = None, quiet:
     ensure_dirs()
     cb = codex_bin(cfg)
     if not cb:
-        raise SystemExit("codex binary not found; set `dgc config set codex_bin /path/to/codex`")
+        raise SystemExit("codex binary not found; set `nerfed config set codex_bin /path/to/codex`")
     q = max(1, min(3, int(queries or cfg.get("queries") or 3)))
     rec = {"id": cas.new_probe_id(), "mode": "fork", "thread_id": thread_id, "started": iso(), "ts_start": now(),
            "queries": q, "status": "running", "dgc_version": VERSION, "pid": os.getpid(), "account": current_account()}
@@ -986,7 +994,7 @@ FRESH_RUNNING = "fresh_running.json"
 
 
 def fresh_running() -> dict | None:
-    r = read_json(os.path.join(DGC_HOME, FRESH_RUNNING))
+    r = read_json(os.path.join(NERFED_HOME, FRESH_RUNNING))
     if r and pid_alive(r.get("pid")):
         return r
     return None
@@ -1007,7 +1015,7 @@ def run_fresh_probe(cfg: dict, model: str | None = None, effort: str | None = No
     ensure_dirs()
     cb = codex_bin(cfg)
     if not cb:
-        raise SystemExit("codex binary not found; set `dgc config set codex_bin /path/to/codex`")
+        raise SystemExit("codex binary not found; set `nerfed config set codex_bin /path/to/codex`")
     dm, de = default_model_settings()
     model, effort = model or dm, effort or de
     if not model:
@@ -1017,7 +1025,7 @@ def run_fresh_probe(cfg: dict, model: str | None = None, effort: str | None = No
            "status": "running", "dgc_version": VERSION, "pid": os.getpid(), "requested_model": model, "requested_effort": effort,
            "account": current_account()}
     write_json(probe_path(rec["id"]), rec)
-    write_json(os.path.join(DGC_HOME, FRESH_RUNNING), {"pid": os.getpid(), "ts": now(), "probe": rec["id"]})
+    write_json(os.path.join(NERFED_HOME, FRESH_RUNNING), {"pid": os.getpid(), "ts": now(), "probe": rec["id"]})
     expected = model
 
     def runner():
@@ -1038,7 +1046,7 @@ def run_fresh_probe(cfg: dict, model: str | None = None, effort: str | None = No
                 rec["elapsed_s"] = round(float(rec.get("elapsed_s") or 0) + out2["elapsed_s"], 1)
     finally:
         try:
-            os.remove(os.path.join(DGC_HOME, FRESH_RUNNING))
+            os.remove(os.path.join(NERFED_HOME, FRESH_RUNNING))
         except OSError:
             pass
     return finalize_probe(rec, outputs, expected, errors, cfg, quiet=quiet)
@@ -1230,7 +1238,7 @@ def deliver_alerts(st: dict, out: dict, model_visible: bool, cfg: dict) -> None:
     prefix = f"🐾 {cfg.get('pet_name') or 'Codex Pet'}: "
     out["systemMessage"] = (out.get("systemMessage", "") + "\n" if out.get("systemMessage") else "") + prefix + text
     if model_visible:
-        ctx = ("[does-gpt-cheat] A model-integrity probe of this thread finished. Before anything else, tell the user "
+        ctx = ("[is-gpt-nerfed] A model-integrity probe of this thread finished. Before anything else, tell the user "
                f"verbatim, as the Codex pet: {text}")
         hso = out.setdefault("hookSpecificOutput", {})
         hso["additionalContext"] = (hso.get("additionalContext", "") + "\n" if hso.get("additionalContext") else "") + ctx
@@ -1253,7 +1261,7 @@ def cmd_hook(args) -> int:
         payload = {"_unparsed": raw[:2000]}
     ev = payload.get("hook_event_name") or payload.get("hookEventName") or args.event or "unknown"
     sid = str(payload.get("session_id") or payload.get("thread_id") or payload.get("threadId") or "unknown")
-    if os.environ.get("DGC_PROBE_PROCESS"):  # hooks fired by our own probe app-server: ignore
+    if os.environ.get("NERFED_PROBE_PROCESS"):  # hooks fired by our own probe app-server: ignore
         return 0
     cfg = load_config()
     ensure_dirs()
@@ -1282,7 +1290,7 @@ def cmd_hook(args) -> int:
             st["tools"].append({"ts": now(), "name": payload.get("tool_name"), "cmd": tool_command_preview(payload)})
             st["tools"] = st["tools"][-300:]
             if cfg.get("halt_on_mismatch") and st.get("halt") and not is_dgc_command(payload):
-                reason = (f"does-gpt-cheat halt: {st['halt'].get('detail')} Work tools are blocked until the user explicitly asks to "
+                reason = (f"is-gpt-nerfed halt: {st['halt'].get('detail')} Work tools are blocked until the user explicitly asks to "
                           f"resume; then run `{DGC_BIN} resume --thread {sid}`.")
                 out.update({"decision": "deny", "reason": reason,
                             "hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason},
@@ -1314,7 +1322,7 @@ def cmd_hook(args) -> int:
                     messages.append(pet_line("NUDGE", why=why, cmd=SKILL_CMD, side=SIDE_CMD))
             if messages:
                 out["systemMessage"] = f"🐾 {cfg.get('pet_name') or 'Codex Pet'}: " + "\n".join(messages)
-                notify(cfg, messages[0], subtitle="does-gpt-cheat")
+                notify(cfg, messages[0], subtitle="is-gpt-nerfed")
             deliver_alerts(st, out, False, cfg)
         elif ev == "SessionEnd":
             st["ended"] = iso()
@@ -1363,7 +1371,7 @@ def parse_iso(s) -> float | None:
 def write_bin_hint() -> None:
     try:
         ensure_dirs()
-        with open(os.path.join(DGC_HOME, "dgc_bin"), "w", encoding="utf-8") as f:
+        with open(os.path.join(NERFED_HOME, "nerfed_bin"), "w", encoding="utf-8") as f:
             f.write(DGC_BIN + "\n")
     except OSError:
         pass
@@ -1378,13 +1386,15 @@ def db_recent_threads_detailed(since_ms: int, limit: int = 40) -> list[dict]:
     return rows
 
 
-def probe_summary(row: dict) -> dict:
+def probe_summary(row: dict, current: str | None = None) -> dict:
     full = read_json(probe_path(row["id"]), {}) or {}
     errors = full.get("errors") or []
     verdict = row.get("verdict") or full.get("verdict")
     status = row.get("status") or full.get("status")
     finished_ts = parse_iso(row.get("finished") or full.get("finished"))
+    account_id = row.get("account_id") or (full.get("account") or {}).get("id")
     return {
+        "account_id": account_id, "stale_account": stale_for_account(account_id, current) if current else False,
         "id": row["id"], "thread_id": row.get("thread_id"), "mode": row.get("mode"), "status": status,
         "finished": row.get("finished"), "finished_ts": finished_ts, "finished_ago": ago(finished_ts),
         "verdict": verdict, "direction": row.get("direction"), "expected": row.get("expected"), "prediction": row.get("prediction"),
@@ -1401,12 +1411,13 @@ def probe_summary(row: dict) -> dict:
 
 
 def demo_snapshot(cfg: dict) -> dict:
-    """Synthetic English sample data for screenshots (`dgc snapshot --demo`). Nothing here is read from disk."""
+    """Synthetic English sample data for screenshots (`nerfed snapshot --demo`). Nothing here is read from disk."""
     t0 = now()
 
     def probe(pid, tid, verdict, direction=None, expected="gpt-6-astra", pred="gpt-6-astra", p=1.0, p_exp=None, margin=None,
-              n=3, q=3, ago_s=300, errors=None, status="done", rounds=1, retries=0, mode="fork"):
+              n=3, q=3, ago_s=300, errors=None, status="done", rounds=1, retries=0, mode="fork", stale=False):
         return {"id": pid, "thread_id": tid, "mode": mode, "status": status, "finished": iso(t0 - ago_s), "finished_ts": t0 - ago_s,
+                "account_id": "other0" if stale else "demo00", "stale_account": stale,
                 "finished_ago": ago(t0 - ago_s), "verdict": verdict, "direction": direction, "expected": expected, "prediction": pred,
                 "probability": p, "p_expected": p_exp if p_exp is not None else (None if p is None else (p if pred == expected else round(1 - p, 2))),
                 "margin": margin, "confidence": None if p is None else ("high" if p >= 0.8 else "low"), "used_outputs": n, "queries": q, "rounds": rounds,
@@ -1414,11 +1425,13 @@ def demo_snapshot(cfg: dict) -> dict:
                 "is_suspicious": verdict == "SUSPICIOUS", "retryable": status == "failed" or verdict == "INVALID", "retries": retries}
 
     def thread(tid, title, model, effort, turns, ago_s, last, hard=0, soft=0, ev=None, due=False, running=False, halted=False):
+        stale = bool(last and last.get("stale_account"))
         return {"id": tid, "title": title, "cwd": "/Users/you/code/" + tid, "model": model, "effort": effort, "updated_ts": t0 - ago_s,
                 "updated": iso(t0 - ago_s), "updated_ago": ago(t0 - ago_s), "active": ago_s < 15 * 60, "turns": turns,
-                "turns_since_probe": min(turns, 5), "due": due, "probe_running": running, "halted": halted, "requested": False,
-                "hard_evidence": hard, "soft_evidence": soft, "last_evidence": ev, "last_probe": last,
-                "alert": hard > 0 or bool(last and last["is_downgrade"])}
+                "turns_since_probe": min(turns, 5), "due": due or stale, "probe_running": running, "halted": halted, "requested": False,
+                "hard_evidence": hard, "soft_evidence": soft, "last_evidence": ev, "last_probe": last, "unverified": stale,
+                "alert": hard > 0 or bool(last and last["is_downgrade"] and not stale),
+                "suspicious": bool(last and last["is_suspicious"] and not stale)}
 
     threads = [
         thread("payments", "Refactor payment webhooks", "gpt-6-astra", "xhigh", 14, 120,
@@ -1429,23 +1442,24 @@ def demo_snapshot(cfg: dict) -> dict:
         thread("oauth", "Add OAuth device flow", "gpt-6-astra", "max", 22, 720,
                probe("c3d4e5f6a7", "oauth", "INVALID", status="failed", pred=None, p=None, p_exp=None, n=0, errors=["codex thread/fork timed out after 45s"], retries=1, ago_s=1200)),
         thread("pg17", "Migrate to Postgres 17", "gpt-5.6-sol", "high", 9, 3600,
-               probe("d4e5f6a7b8", "pg17", "MATCH", expected="gpt-5.6-sol", pred="gpt-5.6-sol", p=1.0, margin=0.0, ago_s=3480)),
+               probe("d4e5f6a7b8", "pg17", "MATCH", expected="gpt-5.6-sol", pred="gpt-5.6-sol", p=1.0, margin=0.0, ago_s=3480, stale=True)),
         thread("relnotes", "Write release notes v2.3", "gpt-6-astra", "medium", 3, 10800, None, due=True),
     ]
     fresh = probe("e5f6a7b8c9", None, "MATCH", p=1.0, margin=0.0, ago_s=1800, mode="fresh")
     recent = [threads[0]["last_probe"], threads[1]["last_probe"], threads[2]["last_probe"], fresh, threads[3]["last_probe"]]
     recent += [probe(f"r{i}", "pg17", "MATCH", expected="gpt-5.6-sol", pred="gpt-5.6-sol", p=1.0, ago_s=7200 + i * 3600) for i in range(5)]
-    return {"generated": iso(), "version": VERSION, "dgc_bin": DGC_BIN, "ledger": "~/.codex/does-gpt-cheat", "config": cfg,
+    return {"generated": iso(), "version": VERSION, "nerfed_bin": DGC_BIN, "ledger": "~/.codex/is-gpt-nerfed", "config": cfg,
             "hooks_last_event": iso(t0 - 12), "hooks_last_event_ago": "12s ago",
-            "account": {"label": "y…@example.com", "plan": "plus"}, "hidden_other_accounts": 0,
-            "overall": {"status": "alert", "downgraded": 1, "suspicious": 1, "running": 0, "message": "1 thread downgraded · 1 suspicious"},
+            "account": {"label": "y…@example.com", "plan": "plus"},
+            "overall": {"status": "alert", "downgraded": 1, "suspicious": 1, "unverified": 1, "running": 0,
+                        "message": "1 thread downgraded · 1 suspicious · 1 unverified since the account switch"},
             "default_model": "gpt-6-astra", "default_effort": "high", "global_probe": fresh, "global_running": False, "global_alert": False,
             "threads": threads, "recent_probes": recent, "demo": True}
 
 
 def migrate_untagged_records(account_id: str) -> None:
     """Records made before account tagging existed belong to whoever is signed in now (runs once)."""
-    marker = os.path.join(DGC_HOME, ".accounts-migrated")
+    marker = os.path.join(NERFED_HOME, ".accounts-migrated")
     if os.path.exists(marker) or not os.path.exists(PROBES_INDEX):
         return
     rows = list(iter_jsonl(PROBES_INDEX))
@@ -1479,7 +1493,6 @@ def cmd_snapshot(args) -> int:
         return 0
     acct = current_account()
     migrate_untagged_records(acct["id"])
-    show_all = bool(getattr(args, "all_accounts", False) or cfg.get("show_other_accounts"))
     horizon = float(getattr(args, "hours", 48) or 48) * 3600
     cutoff = now() - horizon
     threads: dict[str, dict] = {}
@@ -1490,13 +1503,8 @@ def cmd_snapshot(args) -> int:
             "updated_ts": (row.get("updated_at_ms") or 0) / 1000.0, "turns": 0, "turns_since_probe": 0, "due": False,
             "probe_running": False, "halted": False, "requested": False, "hard_evidence": 0, "soft_evidence": 0, "last_evidence": None,
         }
-    hidden = 0
     for st in all_sessions():
         if st.get("kind") != "main":
-            continue
-        if not account_visible(st.get("account_id"), acct["id"], show_all):
-            hidden += 1
-            threads.pop(st["sid"], None)
             continue
         upd = parse_iso(st.get("updated")) or 0
         if upd < cutoff and st["sid"] not in threads:
@@ -1511,7 +1519,7 @@ def cmd_snapshot(args) -> int:
         t["cwd"] = t.get("cwd") or st.get("cwd")
         t["turns"] = int(st.get("turns") or 0)
         t["turns_since_probe"] = int(st.get("turns") or 0) - int(st.get("last_probe_turn") or 0)
-        t["due"] = probe_due(st, cfg)
+        t["due"] = probe_due(st, cfg, acct["id"])
         running = st.get("probe_running") or {}
         t["probe_running"] = bool(running) and (running.get("pid") is None or pid_alive(running.get("pid")))
         t["halted"] = bool(st.get("halt"))
@@ -1521,36 +1529,39 @@ def cmd_snapshot(args) -> int:
         t["soft_evidence"] = sum(1 for e in evs if e.get("severity") == "soft")
         flagged = [e for e in evs if e.get("severity") in ("hard", "soft")]
         t["last_evidence"] = flagged[-1]["detail"] if flagged else None
-    all_rows = list(iter_jsonl(PROBES_INDEX))
-    index_rows = [r for r in all_rows if account_visible(r.get("account_id"), acct["id"], show_all)]
-    hidden += len(all_rows) - len(index_rows)
+    index_rows = list(iter_jsonl(PROBES_INDEX))
     latest: dict[str, dict] = {}
     for row in index_rows:
         if row.get("thread_id"):
             latest[row["thread_id"]] = row
     out_threads = []
-    downgraded = running = suspicious = 0
+    downgraded = running = suspicious = unverified = 0
     for t in threads.values():
         lp = latest.get(t["id"])
-        t["last_probe"] = probe_summary(lp) if lp else None
+        t["last_probe"] = probe_summary(lp, acct["id"]) if lp else None
+        stale = bool(t["last_probe"] and t["last_probe"]["stale_account"])
+        t["unverified"] = stale  # verdict obtained under another Codex account: says nothing about this one
         t["updated"] = iso(t["updated_ts"]) if t["updated_ts"] else None
         t["updated_ago"] = ago(t["updated_ts"])
         t["active"] = bool(t["updated_ts"]) and (now() - t["updated_ts"]) < 15 * 60
-        t["alert"] = t["hard_evidence"] > 0 or bool(t["last_probe"] and t["last_probe"]["is_downgrade"])
-        t["suspicious"] = bool(t["last_probe"] and t["last_probe"]["is_suspicious"]) and not t["alert"]
+        t["alert"] = t["hard_evidence"] > 0 or bool(t["last_probe"] and t["last_probe"]["is_downgrade"] and not stale)
+        t["suspicious"] = bool(t["last_probe"] and t["last_probe"]["is_suspicious"] and not stale) and not t["alert"]
         downgraded += 1 if t["alert"] else 0
         suspicious += 1 if t["suspicious"] else 0
+        unverified += 1 if stale else 0
         running += 1 if t["probe_running"] else 0
         out_threads.append(t)
     out_threads.sort(key=lambda t: (not t["alert"], not t["suspicious"], -(t["updated_ts"] or 0)))
     evs = tail_jsonl(EVENTS_PATH, 1)
     last_event = evs[0] if evs else None
     fresh_rows = [r for r in index_rows if r.get("mode") == "fresh"]
-    global_probe = probe_summary(fresh_rows[-1]) if fresh_rows else None
-    global_alert = bool(global_probe and global_probe["is_downgrade"])
+    global_probe = probe_summary(fresh_rows[-1], acct["id"]) if fresh_rows else None
+    global_stale = bool(global_probe and global_probe["stale_account"])
+    global_alert = bool(global_probe and global_probe["is_downgrade"] and not global_stale)
     fr = fresh_running()
     downgraded += 1 if global_alert else 0
-    suspicious += 1 if (global_probe and global_probe["is_suspicious"] and not global_alert) else 0
+    suspicious += 1 if (global_probe and global_probe["is_suspicious"] and not global_alert and not global_stale) else 0
+    unverified += 1 if global_stale else 0
     running += 1 if fr else 0
     default_model, default_effort = default_model_settings()
     parts = []
@@ -1559,30 +1570,31 @@ def cmd_snapshot(args) -> int:
         parts.append(f"{what} downgraded")
     if suspicious:
         parts.append(f"{suspicious} suspicious")
+    if unverified:
+        parts.append(f"{unverified} unverified since the account switch")
     if running:
         parts.append(f"{running} probe{'s' if running > 1 else ''} running")
     message = " · ".join(parts) if parts else ("all clear" if (out_threads or global_probe) else "no active threads")
-    status = "alert" if downgraded else ("warn" if suspicious else "ok")
-    snap = {"generated": iso(), "version": VERSION, "dgc_bin": DGC_BIN, "ledger": DGC_HOME, "config": cfg,
+    status = "alert" if downgraded else ("warn" if suspicious else ("unverified" if unverified else "ok"))
+    snap = {"generated": iso(), "version": VERSION, "nerfed_bin": DGC_BIN, "ledger": NERFED_HOME, "config": cfg,
             "hooks_last_event": (last_event or {}).get("ts"), "hooks_last_event_ago": ago(parse_iso((last_event or {}).get("ts"))),
-            "overall": {"status": status, "downgraded": downgraded, "suspicious": suspicious, "running": running, "message": message},
+            "overall": {"status": status, "downgraded": downgraded, "suspicious": suspicious, "unverified": unverified,
+                        "running": running, "message": message},
             "default_model": default_model, "default_effort": default_effort,
             "global_probe": global_probe, "global_running": bool(fr), "global_alert": global_alert,
-            "account": {"label": acct["label"], "plan": acct["plan"]}, "hidden_other_accounts": hidden,
-            "threads": out_threads, "recent_probes": [probe_summary(r) for r in index_rows[-10:]][::-1]}
+            "account": {"label": acct["label"], "plan": acct["plan"]},
+            "threads": out_threads, "recent_probes": [probe_summary(r, acct["id"]) for r in index_rows[-10:]][::-1]}
     print(json.dumps(snap, ensure_ascii=False, indent=2 if getattr(args, "pretty", False) else None))
     return 0
 
 
 def cmd_report(args) -> int:
-    cfg = load_config()
     acct = current_account()
-    show_all = bool(getattr(args, "all_accounts", False) or cfg.get("show_other_accounts"))
-    all_rows = list(iter_jsonl(PROBES_INDEX))
-    rows = [r for r in all_rows if account_visible(r.get("account_id"), acct["id"], show_all)]
-    print(f"does-gpt-cheat report  ·  ledger {DGC_HOME}  ·  account {acct['label']}" + (f" ({acct['plan']})" if acct.get("plan") else ""))
-    if len(rows) != len(all_rows):
-        print(f"({len(all_rows) - len(rows)} records from other accounts hidden; use --all-accounts to include them)")
+    rows = list(iter_jsonl(PROBES_INDEX))
+    other = sum(1 for r in rows if stale_for_account(r.get("account_id"), acct["id"]))
+    print(f"is-gpt-nerfed report  ·  ledger {NERFED_HOME}  ·  account {acct['label']}" + (f" ({acct['plan']})" if acct.get("plan") else ""))
+    if other:
+        print(f"({other} records were made under another Codex account; they are marked * and do not vouch for this account)")
     print()
     if rows:
         print(f"{'finished':20} {'probe':11} {'thread':14} {'mode':5} {'expected':16} {'fingerprint':16} {'p':>5} {'n':>3} {'time':>5}  verdict")
@@ -1590,7 +1602,8 @@ def cmd_report(args) -> int:
             p = f"{r['probability'] * 100:4.0f}%" if isinstance(r.get("probability"), (int, float)) else "  —  "
             print(f"{(r.get('finished') or '')[:19]:20} {r.get('id') or '':11} {short(r.get('thread_id'), 12):14} {(r.get('mode') or '')[:5]:5} "
                   f"{(r.get('expected') or '?')[:16]:16} {(r.get('prediction') or '?')[:16]:16} {p:>5} {r.get('used_outputs') or 0:>3} "
-                  f"{r.get('elapsed_s') or 0:4.0f}s  {r.get('verdict')}" + (f" ({r['direction']})" if r.get("direction") else ""))
+                  f"{r.get('elapsed_s') or 0:4.0f}s  {r.get('verdict')}{'*' if stale_for_account(r.get('account_id'), acct['id']) else ''}"
+                  + (f" ({r['direction']})" if r.get("direction") else ""))
         print()
         counts: dict = {}
         for r in rows:
@@ -1731,7 +1744,7 @@ def cmd_audit(args) -> int:
 
 def cmd_status(args) -> int:
     cfg = load_config()
-    print(f"does-gpt-cheat {VERSION}  ·  ledger {DGC_HOME}")
+    print(f"is-gpt-nerfed {VERSION}  ·  ledger {NERFED_HOME}")
     print(f"config: frequency={cfg.get('frequency')} mode={cfg.get('mode')} queries={cfg.get('queries')} parallel={cfg.get('parallel')} "
           f"languages={','.join(cfg.get('languages') or [])} passive={cfg.get('passive')} notify={cfg.get('notify')} halt_on_mismatch={cfg.get('halt_on_mismatch')}")
     evs = tail_jsonl(EVENTS_PATH, 1)
@@ -1768,7 +1781,7 @@ def cmd_config(args) -> int:
         return 0
     if args.action == "set":
         if not args.key or args.value is None:
-            raise SystemExit("usage: dgc config set <key> <value>")
+            raise SystemExit("usage: nerfed config set <key> <value>")
         if args.key not in DEFAULT_CONFIG:
             raise SystemExit(f"unknown key {args.key}; known: {', '.join(DEFAULT_CONFIG)}")
         cfg[args.key] = coerce_config_value(args.key, args.value)
@@ -1776,7 +1789,7 @@ def cmd_config(args) -> int:
         save_config(cfg)
         print(f"{args.key} = {json.dumps(cfg[args.key])}")
         return 0
-    raise SystemExit("usage: dgc config [show|get <key>|set <key> <value>|init]")
+    raise SystemExit("usage: nerfed config [show|get <key>|set <key> <value>|init]")
 
 
 # ------------------------------------------------------------------------------------------ pet
@@ -1813,7 +1826,7 @@ def cmd_pet(args) -> int:
     if args.action == "say":
         text = " ".join(args.text) or pet_line("MATCH", top="gpt-6-astra", p=0.99)
         print(pet_card(cfg, args.verdict or "OK", text, []))
-        notify(cfg, text, subtitle="does-gpt-cheat")
+        notify(cfg, text, subtitle="is-gpt-nerfed")
         return 0
     if args.action == "preview":
         samples = [("MATCH", pet_line("MATCH", seed="a", top="gpt-6-astra", p=0.97)),
@@ -1824,7 +1837,7 @@ def cmd_pet(args) -> int:
             print(pet_card(cfg, v, q, []))
             print()
         return 0
-    raise SystemExit("usage: dgc pet [install|uninstall|say <text>|preview]")
+    raise SystemExit("usage: nerfed pet [install|uninstall|say <text>|preview]")
 
 
 # ---------------------------------------------------------------------------------------- setup
@@ -1927,11 +1940,11 @@ def cmd_teardown(args) -> int:
     if new != text:
         with open(path, "w", encoding="utf-8") as f:
             f.write(new)
-        print("removed does-gpt-cheat entries from config.toml")
+        print("removed is-gpt-nerfed entries from config.toml")
     shutil.rmtree(pet_dst_dir(), ignore_errors=True)
     if args.purge:
-        shutil.rmtree(DGC_HOME, ignore_errors=True)
-        print(f"purged {DGC_HOME}")
+        shutil.rmtree(NERFED_HOME, ignore_errors=True)
+        print(f"purged {NERFED_HOME}")
     print("done. Restart the Codex app to drop the hooks.")
     return 0
 
@@ -1946,7 +1959,7 @@ def cmd_doctor(args) -> int:
         if not ok:
             problems += 1
 
-    print(f"does-gpt-cheat doctor (v{VERSION})")
+    print(f"is-gpt-nerfed doctor (v{VERSION})")
     check(sys.version_info >= (3, 9), f"python {sys.version.split()[0]}", "needs Python 3.9+")
     check(os.path.isdir(CODEX_HOME), f"CODEX_HOME {CODEX_HOME}", "Codex not installed?")
     cb = codex_bin(cfg)
@@ -1969,13 +1982,13 @@ def cmd_doctor(args) -> int:
         check(bool(hooks), f"hooks declared in {os.path.relpath(p, PLUGIN_ROOT)}")
         fallback = re.search(r"\$\{PLUGIN_ROOT:-([^{}]+)\}", text)
         if fallback and fallback.group(1).startswith("/"):
-            check(os.path.exists(os.path.join(fallback.group(1), "skills", "does-gpt-cheat", "scripts", "dgc")), f"hook fallback path {fallback.group(1)}", "run ./install.sh again")
+            check(os.path.exists(os.path.join(fallback.group(1), "skills", "is-gpt-nerfed", "scripts", "nerfed")), f"hook fallback path {fallback.group(1)}", "run ./install.sh again")
         else:
             print("  ⚠️  hook commands rely on Codex exporting PLUGIN_ROOT (run ./install.sh to bake an absolute fallback)")
     text = config_toml_text()
     check(plugin_enabled_in_config(), f'[plugins."{PLUGIN_NAME}@…"] enabled = true in config.toml', "run ./install.sh")
     check(not re.search(r"\[features\][^\[]*hooks\s*=\s*false", text), "hooks feature not disabled in config.toml")
-    check(os.path.exists(os.path.join(pet_dst_dir(), "pet.json")), f"pet installed at {pet_dst_dir()}", "dgc pet install")
+    check(os.path.exists(os.path.join(pet_dst_dir(), "pet.json")), f"pet installed at {pet_dst_dir()}", "nerfed pet install")
     evs = tail_jsonl(EVENTS_PATH, 1)
     recent = bool(evs) and evs[0].get("ts", "") >= iso(now() - 48 * 3600)
     print(f"  {'✅' if recent else '⚠️ '} hook events seen: {evs[0]['ts'] + ' ' + evs[0]['event'] if evs else 'none yet'}"
@@ -2013,9 +2026,9 @@ def cmd_doctor(args) -> int:
 
 def cmd_selftest(args) -> int:
     import tempfile
-    global DGC_HOME, CONFIG_PATH, EVENTS_PATH, PROBES_INDEX, SESSIONS_DIR, PROBES_DIR, ERRORS_PATH, WORKER_LOG
+    global NERFED_HOME, CONFIG_PATH, EVENTS_PATH, PROBES_INDEX, SESSIONS_DIR, PROBES_DIR, ERRORS_PATH, WORKER_LOG
     tmp = tempfile.mkdtemp(prefix="dgc-selftest-")
-    DGC_HOME = tmp
+    NERFED_HOME = tmp
     CONFIG_PATH, EVENTS_PATH, PROBES_INDEX = os.path.join(tmp, "config.json"), os.path.join(tmp, "events.jsonl"), os.path.join(tmp, "probes.jsonl")
     SESSIONS_DIR, PROBES_DIR, ERRORS_PATH, WORKER_LOG = os.path.join(tmp, "sessions"), os.path.join(tmp, "probes"), os.path.join(tmp, "errors.log"), os.path.join(tmp, "worker.log")
     ensure_dirs()
@@ -2066,7 +2079,7 @@ def cmd_selftest(args) -> int:
 
 # ------------------------------------------------------------------------------------- method text
 
-METHOD = f"""does-gpt-cheat — how the verdict is made (v{VERSION})
+METHOD = f"""is-gpt-nerfed — how the verdict is made (v{VERSION})
 
 1. PASSIVE (every turn, zero tokens). Codex writes every thread to a rollout JSONL file and records, per turn,
    the model slug and reasoning effort it *asked for* (turn_context), every settings change the app applied
@@ -2102,7 +2115,7 @@ WHAT IT CANNOT DO
   • Attribution is closed-set: a model outside the bank is mapped to its nearest look-alike. A quantised or
     "dumbed-down" variant that keeps the slug only shows up if its number distribution drifts.
   • Probes fork from persisted history: a turn still in flight is not included.
-Everything is stored locally under {DGC_HOME}; nothing is uploaded. Read the ledger yourself: probes/*.json.
+Everything is stored locally under {NERFED_HOME}; nothing is uploaded. Read the ledger yourself: probes/*.json.
 Credits: fingerprint bank, scorer and probe prompts from https://github.com/xqy2006/ModelTrace (MIT).
 """
 
@@ -2111,8 +2124,8 @@ Credits: fingerprint bank, scorer and probe prompts from https://github.com/xqy2
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="dgc", description="does-gpt-cheat: detect silent model downgrades in Codex sessions")
-    p.add_argument("--version", action="version", version=f"dgc {VERSION}")
+    p = argparse.ArgumentParser(prog="nerfed", description="is-gpt-nerfed: detect silent model downgrades in Codex sessions")
+    p.add_argument("--version", action="version", version=f"nerfed {VERSION}")
     sub = p.add_subparsers(dest="cmd")
 
     s = sub.add_parser("hook", help="(called by Codex hooks) consume a hook payload on stdin")
@@ -2140,7 +2153,7 @@ def build_parser() -> argparse.ArgumentParser:
     a.set_defaults(fn=cmd_probe_submit_numbers)
     a = ps.add_parser("list")
     a.add_argument("--last", type=int, default=20)
-    a.set_defaults(fn=lambda args: cmd_report(argparse.Namespace(last=args.last, all_accounts=False)))
+    a.set_defaults(fn=lambda args: cmd_report(argparse.Namespace(last=args.last)))
 
     s = sub.add_parser("worker", help="(background) run one fork probe for a thread, or --fresh for a global probe")
     s.add_argument("--thread")
@@ -2154,7 +2167,6 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_resume)
     s = sub.add_parser("report", help="table of all probes + passive findings")
     s.add_argument("--last", type=int, default=30)
-    s.add_argument("--all-accounts", action="store_true", help="include records made under other Codex accounts")
     s.set_defaults(fn=cmd_report)
     s = sub.add_parser("explain", help="show one probe in detail, or --method")
     s.add_argument("probe_id", nargs="?")
@@ -2178,7 +2190,6 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
     s.add_argument("--pretty", action="store_true")
     s.add_argument("--demo", action="store_true", help="synthetic English sample data (for screenshots)")
-    s.add_argument("--all-accounts", action="store_true")
     s.add_argument("--hours", type=float, default=48)
     s.set_defaults(fn=cmd_snapshot)
     s = sub.add_parser("config", help="show / get / set / init")

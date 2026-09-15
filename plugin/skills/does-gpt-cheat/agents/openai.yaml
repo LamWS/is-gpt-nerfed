@@ -1,4 +1,0 @@
-interface:
-  display_name: "Does GPT Cheat?"
-  short_description: "Probe this session for silent model downgrades"
-  default_prompt: "Use $does-gpt-cheat to run a model-integrity probe of this session and show me the pet's verdict."

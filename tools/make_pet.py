@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the does-gpt-cheat Codex pet ("Inspector Astra") with pure Python — no PIL needed.
+"""Generate the is-gpt-nerfed Codex pet ("Inspector Astra") with pure Python — no PIL needed.
 
 Output (Codex pet v2 contract, see the bundled hatch-pet skill):
   plugin/assets/pet/spritesheet.png   1536x2288 RGBA, 8 columns x 11 rows of 192x208 cells
@@ -264,7 +264,7 @@ def main():
     write_png(os.path.join(pet_dir, "spritesheet.png"), COLS * CELL_W, ROWS * CELL_H, atlas)
     with open(os.path.join(pet_dir, "pet.json"), "w", encoding="utf-8") as f:
         json.dump({
-            "id": "does-gpt-cheat",
+            "id": "is-gpt-nerfed",
             "displayName": "Inspector Astra",
             "description": "Sniffs out silent model downgrades and congratulates you when it finds one.",
             "spriteVersionNumber": 2,

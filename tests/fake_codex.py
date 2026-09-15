@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A fake `codex app-server --stdio` for offline tests.
 
-Speaks just enough of the app-server JSON-RPC protocol for does-gpt-cheat's probe runner. Behaviour is
+Speaks just enough of the app-server JSON-RPC protocol for is-gpt-nerfed's probe runner. Behaviour is
 controlled by environment variables:
   FAKE_CODEX_MODEL        model label whose reference text is returned (default gpt-6-astra)
   FAKE_CODEX_THREAD_MODEL model reported for the target thread (default = FAKE_CODEX_MODEL)

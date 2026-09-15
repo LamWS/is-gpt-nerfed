@@ -2,12 +2,12 @@
 import PackageDescription
 
 let package = Package(
-    name: "DoesGPTCheat",
+    name: "IsGPTNerfed",
     platforms: [.macOS("26.0")],
     targets: [
         .executableTarget(
-            name: "DoesGPTCheat",
-            path: "Sources/DoesGPTCheat",
+            name: "IsGPTNerfed",
+            path: "Sources/IsGPTNerfed",
             swiftSettings: [.unsafeFlags(["-Osize"])]
         )
     ]

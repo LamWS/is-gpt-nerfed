@@ -13,13 +13,13 @@ from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TMP = tempfile.mkdtemp(prefix="dgc-test-")
-os.environ["DGC_HOME"] = os.path.join(TMP, "ledger")
+os.environ["NERFED_HOME"] = os.path.join(TMP, "ledger")
 os.environ["CODEX_HOME"] = os.path.join(TMP, "codex-home")
 os.makedirs(os.environ["CODEX_HOME"], exist_ok=True)
-for var in ("CODEX_THREAD_ID", "CODEX_SESSION_ID", "CODEX_SANDBOX_NETWORK_DISABLED", "DGC_PROBE_PROCESS"):
+for var in ("CODEX_THREAD_ID", "CODEX_SESSION_ID", "CODEX_SANDBOX_NETWORK_DISABLED", "NERFED_PROBE_PROCESS"):
     os.environ.pop(var, None)
 
-DGC_PATH = os.path.join(ROOT, "plugin", "skills", "does-gpt-cheat", "scripts", "dgc")
+DGC_PATH = os.path.join(ROOT, "plugin", "skills", "is-gpt-nerfed", "scripts", "nerfed")
 FAKE_CODEX = os.path.join(ROOT, "tests", "fake_codex.py")
 loader = importlib.machinery.SourceFileLoader("dgc", DGC_PATH)
 spec = importlib.util.spec_from_loader("dgc", loader)
@@ -307,7 +307,7 @@ class ForkProbeTests(unittest.TestCase):
         dgc.save_session(st)
         with mock.patch.object(dgc, "link_session", side_effect=lambda st: st.update(kind="main")):
             out = json.loads(run_hook({**base, "hook_event_name": "Stop"}))
-        self.assertIn("$does-gpt-cheat", out["systemMessage"])
+        self.assertIn("$is-gpt-nerfed", out["systemMessage"])
 
     def test_self_answer_mode_inside_side_conversation(self):
         rows = fixture_rows()
@@ -355,20 +355,33 @@ class ForkProbeTests(unittest.TestCase):
         sign_in("account-A")
         a = dgc.current_account()
         self.assertNotIn("account-A", json.dumps(a), "raw account id must never be stored")
+        dgc.save_config({**dgc.load_config(), "frequency": "turns:8"})
+        base = {"session_id": "acct-thread-A", "cwd": TMP, "model": "gpt-6-astra"}
+        with mock.patch.object(dgc, "link_session", side_effect=lambda st: st.update(kind="main")):
+            run_hook({**base, "hook_event_name": "UserPromptSubmit", "prompt": "1"})
         run_cli(["probe", "now", "--mode", "fork", "--thread", "acct-thread-A"], {"FAKE_CODEX_MODEL": "gpt-6-astra"})
         rec = [r for r in dgc.iter_jsonl(dgc.PROBES_INDEX) if r["thread_id"] == "acct-thread-A"][-1]
         self.assertEqual(rec["account_id"], a["id"])
-        rc, out = run_cli(["snapshot", "--json"])
-        self.assertIn("acct-thread-A", out)
+        snap = json.loads(run_cli(["snapshot", "--json"])[1])
+        t = next(t for t in snap["threads"] if t["id"] == "acct-thread-A")
+        self.assertFalse(t["unverified"])
+        self.assertFalse(t["last_probe"]["stale_account"])
+        self.assertFalse(t["due"], "just probed under this account")
+        # switch accounts: the thread stays (threads are shared), but its verdict no longer vouches for this account
         sign_in("account-B")
-        rc, out = run_cli(["snapshot", "--json"])
-        snap = json.loads(out)
-        self.assertNotIn("acct-thread-A", [t["id"] for t in snap["threads"]])
-        self.assertGreaterEqual(snap["hidden_other_accounts"], 1)
-        rc, out = run_cli(["snapshot", "--json", "--all-accounts"])
-        self.assertIn("acct-thread-A", out)
+        snap = json.loads(run_cli(["snapshot", "--json"])[1])
+        t = next(t for t in snap["threads"] if t["id"] == "acct-thread-A")
+        self.assertTrue(t["unverified"])
+        self.assertTrue(t["last_probe"]["stale_account"])
+        self.assertTrue(t["due"], "must be re-probed under the new account")
+        self.assertIn("unverified since the account switch", snap["overall"]["message"])
+        self.assertEqual(snap["overall"]["status"], "unverified")
+        with mock.patch.object(dgc, "link_session", side_effect=lambda st: st.update(kind="main")), \
+                mock.patch.object(dgc, "spawn_worker", return_value=True) as spawn:
+            run_hook({**base, "hook_event_name": "Stop"})
+            spawn.assert_called_once()
         rc, out = run_cli(["report"])
-        self.assertIn("hidden", out)
+        self.assertIn("another Codex account", out)
         os.remove(auth)
 
     def test_hook_never_crashes(self):

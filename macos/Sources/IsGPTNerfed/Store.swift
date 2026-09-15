@@ -18,8 +18,8 @@ final class Store {
     var isAlert: Bool { (snapshot?.overall.downgraded ?? 0) > 0 }
     var isWarn: Bool { !isAlert && (snapshot?.overall.suspicious ?? 0) > 0 }
     var isRunning: Bool { (snapshot?.overall.running ?? 0) > 0 }
-    /// `DGC_DEMO=1` renders synthetic English sample data (used for README screenshots).
-    let demo = ProcessInfo.processInfo.environment["DGC_DEMO"] == "1"
+    /// `NERFED_DEMO=1` renders synthetic English sample data (used for README screenshots).
+    let demo = ProcessInfo.processInfo.environment["NERFED_DEMO"] == "1"
 
     func start(interval: Duration = .seconds(8)) {
         guard pollTask == nil else { return }

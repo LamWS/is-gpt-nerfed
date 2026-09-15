@@ -59,10 +59,15 @@ private func petFace(alert: Bool, warn: Bool, running: Bool) -> String {
 struct VerdictLine: View {
     let probe: ProbeSummary
     var body: some View {
+        let stale = probe.staleAccount == true  // obtained under another Codex account: dimmed, does not vouch
         HStack(spacing: 4) {
-            Text(probe.word).font(Type.strong).foregroundStyle(probe.tint)
+            Text(probe.word).font(Type.strong).foregroundStyle(stale ? Color.secondary : probe.tint)
             Text("·").foregroundStyle(.tertiary)
-            Text(probe.detail).foregroundStyle(.secondary).lineLimit(1)
+            Text(probe.detail).foregroundStyle(stale ? .tertiary : .secondary).lineLimit(1)
+            if stale {
+                Text("·").foregroundStyle(.tertiary)
+                Text("another account, unverified").foregroundStyle(.tertiary)
+            }
             if let ago = probe.finishedAgo, !ago.isEmpty {
                 Text("·").foregroundStyle(.tertiary)
                 Text(ago).monospacedDigit().foregroundStyle(.tertiary)
@@ -123,7 +128,7 @@ struct PanelView: View {
     }
 
     private var statusWord: String {
-        if let err = store.lastError { return "dgc error: \(err)" }
+        if let err = store.lastError { return "nerfed error: \(err)" }
         guard let s = store.snapshot else { return "Loading…" }
         let m = s.overall.message
         return m.prefix(1).uppercased() + m.dropFirst()
@@ -169,10 +174,7 @@ struct PanelView: View {
 
     private var threads: some View {
         let list = store.snapshot?.threads ?? []
-        let hidden = store.snapshot?.hiddenOtherAccounts ?? 0
-        var trailing = list.isEmpty ? nil : "\(list.count) in 48 h"
-        if hidden > 0 { trailing = (trailing ?? "") + " · \(hidden) from other accounts hidden" }
-        return Group(title: "Active threads", trailing: trailing) {
+        return Group(title: "Active threads", trailing: list.isEmpty ? nil : "\(list.count) in 48 h") {
             if list.isEmpty {
                 Text(store.snapshot == nil ? "Reading the ledger…" : "No Codex threads in the last 48 hours.")
                     .font(Type.text).foregroundStyle(.secondary)
@@ -224,6 +226,7 @@ struct ThreadRow: View {
     private var dot: Color {
         if thread.alert { return .red }
         if thread.suspicious == true { return .orange }
+        if thread.unverified == true { return .secondary.opacity(0.35) }
         if let p = thread.lastProbe, p.verdict == "MATCH" { return .green }
         return .secondary.opacity(0.35)
     }

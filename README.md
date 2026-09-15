@@ -1,9 +1,11 @@
-# does-gpt-cheat
+# is-gpt-nerfed
 
-**Is the model answering you the one you selected?** does-gpt-cheat is a Codex plugin that watches your
+*Shrinkflation detector for Codex.*
+
+**Is the model answering you the one you selected?** is-gpt-nerfed is a Codex plugin that watches your
 Codex desktop / CLI threads for silent model downgrades and lets a snarky Codex pet break the news:
 
-> 🎉 Congrats! You've been downgraded! You asked for gpt-6-astra; the fingerprint says gpt-5.6-luna (91%, 3/3 answers). Enjoy the discount you didn't ask for.
+> 🎉 Congrats! You've been nerfed! You asked for gpt-6-astra; the fingerprint says gpt-5.6-luna (91%, 3/3 answers). Enjoy the discount you didn't ask for.
 
 Everything runs locally, uses only documented Codex extension points (plugins, hooks, skills, pets, the
 app-server protocol) and modifies nothing inside Codex. The fingerprint bank, scorer and probe prompts come
@@ -17,7 +19,7 @@ from [ModelTrace](https://github.com/xqy2006/ModelTrace) by xqy2006 (MIT); see *
   <img src="docs/panel-icon-normal.png" width="44" alt="menu bar icon, all clear">
   <img src="docs/panel-icon-warn.png" width="44" alt="menu bar icon, suspicious">
   <img src="docs/panel-icon-alert.png" width="44" alt="menu bar icon, downgraded">
-  <br><sub>Menu bar glyph: all clear · suspicious · downgraded. Panels above are self-rendered sample data (<code>DGC_DEMO=1 DoesGPTCheat --render</code>); the live panel sits on Liquid Glass.</sub>
+  <br><sub>Menu bar glyph: all clear · suspicious · downgraded. Panels above are self-rendered sample data (<code>NERFED_DEMO=1 IsGPTNerfed --render</code>); the live panel sits on Liquid Glass.</sub>
 </p>
 
 ## How it works
@@ -69,21 +71,21 @@ message at the next turn boundary, and (for downgrades) the Codex notification s
 ## Install (macOS, Codex desktop app or CLI ≥ 0.117)
 
 ```bash
-git clone https://github.com/<you>/does-gpt-cheat ~/does-gpt-cheat && cd ~/does-gpt-cheat && ./install.sh
+git clone https://github.com/<you>/is-gpt-nerfed ~/is-gpt-nerfed && cd ~/is-gpt-nerfed && ./install.sh
 ```
 
 `install.sh` registers this folder as a local plugin marketplace (`codex plugin marketplace add` + `codex plugin add`,
-with a fallback that appends two blocks to `~/.codex/config.toml`), installs the pet, and runs `dgc doctor`. Needs
+with a fallback that appends two blocks to `~/.codex/config.toml`), installs the pet, and runs `nerfed doctor`. Needs
 only the system `python3`; the codex binary is found on `PATH` or inside the ChatGPT/Codex app bundle
 (`CODEX_BIN=/path/to/codex ./install.sh` to override).
 
 Then:
 
 1. Restart the Codex app (plugins load on start).
-2. Trust the plugin's hooks once: Codex CLI → `/hooks` → does-gpt-cheat → trust; the desktop app asks in the plugin's settings.
-3. In any thread say `$does-gpt-cheat`, or `/side $does-gpt-cheat` to keep it out of your context.
+2. Trust the plugin's hooks once: Codex CLI → `/hooks` → is-gpt-nerfed → trust; the desktop app asks in the plugin's settings.
+3. In any thread say `$is-gpt-nerfed`, or `/side $is-gpt-nerfed` to keep it out of your context.
 
-From another machine, `codex plugin marketplace add <owner>/does-gpt-cheat` then `codex plugin add does-gpt-cheat@does-gpt-cheat`
+From another machine, `codex plugin marketplace add <owner>/is-gpt-nerfed` then `codex plugin add is-gpt-nerfed@is-gpt-nerfed`
 works too (Codex supports git marketplaces); run `./install.sh` from the checked-out copy for the pet and the doctor.
 
 Uninstall: `./uninstall.sh` (add `--purge` to delete the local ledger). Codex caches a copy of the plugin under
@@ -102,40 +104,45 @@ Uninstall: `./uninstall.sh` (add `--purge` to delete the local ledger). Codex ca
   **Resume** (when a halt is active) buttons;
 - **Settings**: frequency, background vs remind-only, forks per probe, prompt languages, notifications, sound,
   halt-on-mismatch, launch at login;
-- **Report**: the full `dgc report` in a window.
+- **Report**: the full `nerfed report` in a window.
 
 ```bash
 ./macos/build.sh --install    # needs Xcode 26; builds, ad-hoc signs, installs to ~/Applications and launches
 ./macos/build.sh --run        # run from the build folder instead
 ```
 
-The app is a thin client: it polls `dgc snapshot --json` every 8 s and dispatches `dgc worker`, `dgc config set`
-and `dgc resume`. Probes that fail on transport are retried once automatically; the panel offers a manual Retry after that.
+The app is a thin client: it polls `nerfed snapshot --json` every 8 s and dispatches `nerfed worker`, `nerfed config set`
+and `nerfed resume`. Probes that fail on transport are retried once automatically; the panel offers a manual Retry after that.
 Thread titles come straight from Codex's state DB, so renaming a thread in Codex shows up on the next refresh.
-`DoesGPTCheat --render out.png` writes self-portraits of the panel (add `DGC_DEMO=1` for the sample data shown above).
+
+**Accounts.** Threads are local and shared across Codex accounts, but nerfing may well be per account, so every
+probe is tagged with a hash of the signed-in account (from `~/.codex/auth.json`; the raw id is never stored). After
+you switch accounts, earlier verdicts are shown dimmed as "another account, unverified", the overall status stops
+saying all clear, and each such thread is re-probed the next time it is active.
+`IsGPTNerfed --render out.png` writes self-portraits of the panel (add `NERFED_DEMO=1` for the sample data shown above).
 
 ## Using it
 
 ```bash
-./bin/dgc report                      # every probe + passive findings
-./bin/dgc explain <probe-id>          # attribution table, per-fork token usage, errors
-./bin/dgc explain --method            # how the verdict is made
-./bin/dgc audit --days 7              # zero-token scan of every rollout of the last week
-./bin/dgc status                      # schedule state per active thread
-./bin/dgc doctor --fork               # proves an ephemeral fork works, with zero inference
-./bin/dgc config set frequency turns:8   # or 30m, 2h, manual
-./bin/dgc config set halt_on_mismatch true
-./bin/dgc probe now --thread <id>     # probe any persisted thread from a terminal
+./bin/nerfed report                      # every probe + passive findings
+./bin/nerfed explain <probe-id>          # attribution table, per-fork token usage, errors
+./bin/nerfed explain --method            # how the verdict is made
+./bin/nerfed audit --days 7              # zero-token scan of every rollout of the last week
+./bin/nerfed status                      # schedule state per active thread
+./bin/nerfed doctor --fork               # proves an ephemeral fork works, with zero inference
+./bin/nerfed config set frequency turns:8   # or 30m, 2h, manual
+./bin/nerfed config set halt_on_mismatch true
+./bin/nerfed probe now --thread <id>     # probe any persisted thread from a terminal
 ```
 
-In a thread: `$does-gpt-cheat` runs a probe of *that* thread (the model reads `CODEX_THREAD_ID`); if the model's shell
-is sandboxed without network, the probe is queued and runs right after the turn ends. `/side $does-gpt-cheat` makes the
+In a thread: `$is-gpt-nerfed` runs a probe of *that* thread (the model reads `CODEX_THREAD_ID`); if the model's shell
+is sandboxed without network, the probe is queued and runs right after the turn ends. `/side $is-gpt-nerfed` makes the
 side conversation answer the challenge directly.
 
 Automatic mode (`mode=auto`, default): each main thread keeps its own counter; when `frequency` is reached the Stop hook
 launches a detached worker that forks *that* thread. Subagent threads are excluded. `mode=nudge` only reminds you.
 
-### Configuration (`~/.codex/does-gpt-cheat/config.json`)
+### Configuration (`~/.codex/is-gpt-nerfed/config.json`)
 
 | key | default | meaning |
 | --- | --- | --- |
@@ -148,7 +155,7 @@ launches a detached worker that forks *that* thread. Subagent threads are exclud
 | `notify` / `notify_on_ok` | `true` / `false` | macOS notifications |
 | `announce_ok` | `false` | also push MATCH verdicts into the thread |
 | `sound` | `true` | Codex notification sound on a downgrade |
-| `halt_on_mismatch` | `false` | deny work tools after a mismatch until `dgc resume` |
+| `halt_on_mismatch` | `false` | deny work tools after a mismatch until `nerfed resume` |
 | `mismatch_confidence` | `0.8` | p(top) needed (and 1 − it allowed for the declared model) to call a MISMATCH |
 | `confirm_uncertain` | `true` | run a second round of forks when the first is SUSPICIOUS |
 | `pet_name` | `Inspector Astra` | who speaks |
@@ -165,19 +172,19 @@ launches a detached worker that forks *that* thread. Subagent threads are exclud
 - The probe's forks run in a private app-server process, so if routing were tied to the desktop's own connection
   rather than to the conversation and account, fidelity would be lower than the desktop's own `/side`. Unverifiable.
 
-The ledger under `~/.codex/does-gpt-cheat/` (`probes/*.json`, `sessions/*.json`, `events.jsonl`) is plain JSON; read it.
+The ledger under `~/.codex/is-gpt-nerfed/` (`probes/*.json`, `sessions/*.json`, `events.jsonl`) is plain JSON; read it.
 
 ## Development
 
 ```bash
 python3 -m unittest discover -s tests -v   # scanner, verdicts, scheduler, offline end-to-end via tests/fake_codex.py
 python3 -m unittest tests.test_parity -v   # the Python scorer must match ModelTrace's JS core to 1e-9 (needs node)
-./bin/dgc selftest
+./bin/nerfed selftest
 python3 tools/make_pet.py                  # regenerate the pet spritesheet (pure Python)
 ```
 
-Layout: `plugin/` is the Codex plugin (`.codex-plugin/plugin.json`, `skills/does-gpt-cheat/`, `assets/`),
-`.agents/plugins/marketplace.json` makes this repo a marketplace, `bin/dgc` is a convenience wrapper.
+Layout: `plugin/` is the Codex plugin (`.codex-plugin/plugin.json`, `skills/is-gpt-nerfed/`, `assets/`),
+`.agents/plugins/marketplace.json` makes this repo a marketplace, `bin/nerfed` is a convenience wrapper.
 
 ## Credits
 

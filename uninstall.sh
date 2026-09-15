@@ -1,5 +1,5 @@
 #!/bin/sh
-# does-gpt-cheat uninstaller. Add --purge to also delete the local ledger (~/.codex/does-gpt-cheat).
+# is-gpt-nerfed uninstaller. Add --purge to also delete the local ledger (~/.codex/is-gpt-nerfed).
 set -eu
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-exec "$ROOT/bin/dgc" teardown "$@"
+exec "$ROOT/bin/nerfed" teardown "$@"

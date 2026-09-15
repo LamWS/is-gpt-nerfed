@@ -2,7 +2,7 @@
 import CoreGraphics
 import Foundation
 
-let owner = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "DoesGPTCheat"
+let owner = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "IsGPTNerfed"
 let bounds = CGDisplayBounds(CGMainDisplayID())
 print("display \(Int(bounds.width))x\(Int(bounds.height))")
 let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []

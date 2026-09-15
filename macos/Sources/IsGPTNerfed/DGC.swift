@@ -6,29 +6,29 @@ enum DGCError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .notFound: return "dgc not found. Run ./install.sh in the does-gpt-cheat checkout."
+        case .notFound: return "dgc not found. Run ./install.sh in the is-gpt-nerfed checkout."
         case .failed(let msg): return msg
         }
     }
 }
 
-/// Thin bridge to the `dgc` Python CLI. All logic stays in the plugin; the app only renders and dispatches.
+/// Thin bridge to the `nerfed` Python CLI. All logic stays in the plugin; the app only renders and dispatches.
 enum DGC {
     static let home = FileManager.default.homeDirectoryForCurrentUser.path
 
     static func locate() -> String? {
         let fm = FileManager.default
-        if let env = ProcessInfo.processInfo.environment["DGC_BIN"], fm.fileExists(atPath: env) { return env }
-        if let hint = try? String(contentsOfFile: home + "/.codex/does-gpt-cheat/dgc_bin", encoding: .utf8) {
+        if let env = ProcessInfo.processInfo.environment["NERFED_BIN"], fm.fileExists(atPath: env) { return env }
+        if let hint = try? String(contentsOfFile: home + "/.codex/is-gpt-nerfed/nerfed_bin", encoding: .utf8) {
             let p = hint.trimmingCharacters(in: .whitespacesAndNewlines)
             if fm.fileExists(atPath: p) { return p }
         }
-        let direct = home + "/does-gpt-cheat/plugin/skills/does-gpt-cheat/scripts/dgc"
+        let direct = home + "/is-gpt-nerfed/plugin/skills/is-gpt-nerfed/scripts/nerfed"
         if fm.fileExists(atPath: direct) { return direct }
-        let cacheRoot = home + "/.codex/plugins/cache/does-gpt-cheat/does-gpt-cheat"
+        let cacheRoot = home + "/.codex/plugins/cache/is-gpt-nerfed/is-gpt-nerfed"
         if let versions = try? fm.contentsOfDirectory(atPath: cacheRoot) {
             for v in versions.sorted().reversed() {
-                let p = cacheRoot + "/" + v + "/skills/does-gpt-cheat/scripts/dgc"
+                let p = cacheRoot + "/" + v + "/skills/is-gpt-nerfed/scripts/nerfed"
                 if fm.fileExists(atPath: p) { return p }
             }
         }
@@ -84,7 +84,7 @@ enum DGC {
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["python3", bin] + args
         process.environment = environment()
-        let logPath = home + "/.codex/does-gpt-cheat/worker.log"
+        let logPath = home + "/.codex/is-gpt-nerfed/worker.log"
         if !FileManager.default.fileExists(atPath: logPath) {
             FileManager.default.createFile(atPath: logPath, contents: nil)
         }

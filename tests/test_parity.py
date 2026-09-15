@@ -10,7 +10,7 @@ import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CORE = os.path.join(ROOT, "plugin", "skills", "does-gpt-cheat", "scripts", "modeltrace_core.py")
+CORE = os.path.join(ROOT, "plugin", "skills", "is-gpt-nerfed", "scripts", "modeltrace_core.py")
 BANK = os.path.join(ROOT, "plugin", "assets", "modeltrace", "unified_bank.json")
 FIXTURE = os.path.join(ROOT, "tests", "fixtures", "reference_subset.jsonl")
 JS_CORE = os.path.join(ROOT, "tests", "fixtures", "fingerprint-core.mjs")

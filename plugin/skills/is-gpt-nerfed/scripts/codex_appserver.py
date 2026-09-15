@@ -18,7 +18,7 @@ import threading
 import time
 import uuid
 
-CLIENT_INFO = {"name": "does-gpt-cheat", "version": "0.2.0"}
+CLIENT_INFO = {"name": "is-gpt-nerfed", "version": "0.3.0"}
 FINISHED_TURN = ("completed", "interrupted", "failed")
 MESSAGE_ITEMS = ("userMessage", "agentMessage", "reasoning", "hookPrompt")
 
@@ -49,7 +49,7 @@ class AppServer:
 
     def __init__(self, codex_bin: str, env: dict | None = None):
         environ = dict(os.environ if env is None else env)
-        environ["DGC_PROBE_PROCESS"] = "1"
+        environ["NERFED_PROBE_PROCESS"] = "1"
         # Our private app-server must not fire anyone's hooks or desktop notifications while it probes.
         args = [codex_bin, "app-server", "--stdio", "-c", "notify=[]", "-c", "features.hooks=false"]
         self.proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -89,7 +89,7 @@ class AppServer:
                 if "method" in message and "id" in message:  # server → client request: refuse
                     try:
                         self._write({"id": message["id"], "error": {"code": -32601,
-                                    "message": "does-gpt-cheat probes do not execute tools or grant permissions"}})
+                                    "message": "is-gpt-nerfed probes do not execute tools or grant permissions"}})
                     except AppServerError:
                         pass
                     with self._cond:

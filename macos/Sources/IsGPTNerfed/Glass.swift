@@ -1,7 +1,7 @@
 import SwiftUI
 
 // The menu bar popover is already Liquid Glass; content inside stays flat and quiet.
-// `plainRendering` is set only by `DoesGPTCheat --render`, where AppKit-backed controls cannot be drawn.
+// `plainRendering` is set only by `IsGPTNerfed --render`, where AppKit-backed controls cannot be drawn.
 
 private struct PlainRenderingKey: EnvironmentKey {
     static let defaultValue = false

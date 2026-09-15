@@ -1,11 +1,11 @@
 {
-  "name": "does-gpt-cheat",
+  "name": "is-gpt-nerfed",
   "interface": {
-    "displayName": "does-gpt-cheat"
+    "displayName": "is-gpt-nerfed"
   },
   "plugins": [
     {
-      "name": "does-gpt-cheat",
+      "name": "is-gpt-nerfed",
       "source": {
         "source": "local",
         "path": "./plugin"

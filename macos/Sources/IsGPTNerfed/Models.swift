@@ -1,6 +1,6 @@
 import Foundation
 
-/// Mirrors the JSON produced by `dgc snapshot --json` (snake_case keys, decoded with convertFromSnakeCase).
+/// Mirrors the JSON produced by `nerfed snapshot --json` (snake_case keys, decoded with convertFromSnakeCase).
 struct Snapshot: Codable {
     var generated: String
     var version: String
@@ -16,7 +16,6 @@ struct Snapshot: Codable {
     var globalRunning: Bool?
     var globalAlert: Bool?
     var account: AccountInfo?
-    var hiddenOtherAccounts: Int?
     var threads: [ThreadInfo]
     var recentProbes: [ProbeSummary]
     var demo: Bool?
@@ -31,6 +30,7 @@ struct Overall: Codable {
     var status: String
     var downgraded: Int
     var suspicious: Int?
+    var unverified: Int?
     var running: Int
     var message: String
 }
@@ -49,7 +49,6 @@ struct DGCConfig: Codable {
     var haltOnMismatch: Bool
     var mismatchConfidence: Double?
     var confirmUncertain: Bool?
-    var showOtherAccounts: Bool?
     var petName: String
 }
 
@@ -64,6 +63,7 @@ struct ThreadInfo: Codable, Identifiable {
     var active: Bool
     var alert: Bool
     var suspicious: Bool?
+    var unverified: Bool?
     var turns: Int
     var turnsSinceProbe: Int
     var due: Bool
@@ -99,6 +99,7 @@ struct ProbeSummary: Codable, Identifiable {
     var quote: String?
     var isDowngrade: Bool?
     var isSuspicious: Bool?
+    var staleAccount: Bool?
     var retryable: Bool?
     var retries: Int?
 
