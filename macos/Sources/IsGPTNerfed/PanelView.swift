@@ -35,6 +35,8 @@ extension ProbeSummary {
         var parts: [String] = []
         if isFailure {
             parts.append(errors?.first ?? "no usable sample")
+        } else if staleAccount == true {
+            parts.append(prediction ?? "?")  // unverified for this account: the numbers would only lend false weight
         } else {
             var s = prediction ?? "?"
             if !probabilityText.isEmpty { s += " \(probabilityText)" }
@@ -88,6 +90,7 @@ struct PanelView: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.plainRendering) private var plain
     @State private var showSettings: Bool
+    @State private var listHeight: CGFloat = 0
 
     init(showSettings: Bool = false) {
         _showSettings = State(initialValue: showSettings)
@@ -180,7 +183,7 @@ struct PanelView: View {
         let last = snap?.globalProbe
         return Group(title: "Fresh session", trailing: "\(snap?.defaultModel ?? "default model")\(snap?.defaultEffort.map { " @ \($0)" } ?? "")") {
             HStack(spacing: 8) {
-                Circle().fill(last.map { $0.isFailure ? Color.secondary.opacity(0.35) : $0.tint } ?? Color.secondary.opacity(0.35))
+                Circle().fill(last.map { ($0.isFailure || $0.staleAccount == true) ? Color.secondary.opacity(0.35) : $0.tint } ?? Color.secondary.opacity(0.35))
                     .frame(width: 7, height: 7)
                 if running {
                     ProgressView().controlSize(.mini)
@@ -217,6 +220,8 @@ struct PanelView: View {
                     }
                 }
             } else {
+                // A ScrollView inside a self-sizing popover collapses to zero height, so size it from the
+                // measured content height (capped at 330) instead of letting the layout guess.
                 ScrollView {
                     VStack(spacing: 0) {
                         ForEach(Array(list.enumerated()), id: \.element.id) { i, t in
@@ -224,8 +229,9 @@ struct PanelView: View {
                             ThreadRow(thread: t)
                         }
                     }
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { listHeight = $0 }
                 }
-                .frame(maxHeight: 330)
+                .frame(height: min(330, max(listHeight, 56)))
             }
         }
     }
