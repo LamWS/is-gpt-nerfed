@@ -1599,7 +1599,8 @@ def demo_snapshot(cfg: dict) -> dict:
     return {"generated": iso(), "version": VERSION, "nerfed_bin": DGC_BIN, "ledger": "~/.codex/is-gpt-nerfed", "config": cfg,
             "hooks_last_event": iso(t0 - 12), "hooks_last_event_ago": "12s ago",
             "hooks": {"checked": iso(t0 - 300), "checked_ago": "5m ago", "total": 5, "trusted": 5, "untrusted": 0, "state": "trusted",
-                      "error": None, "last_desktop_event": iso(t0 - 12), "last_desktop_event_ago": "12s ago", "desktop_loaded": True},
+                      "error": None, "last_desktop_event": iso(t0 - 12), "last_desktop_event_ago": "12s ago", "desktop_loaded": True,
+                      "installed_ago": "2h ago", "desktop_loaded_current": True, "stale_since_install_s": None},
             "account": {"label": "y…@example.com", "plan": "plus", "switched_at": iso(t0 - 2700), "switched_ago": "45m ago",
                         "previous_label": "o…@example.com"},
             "overall": {"status": "alert", "downgraded": 1, "suspicious": 1, "unverified": 1, "running": 0,
@@ -1806,6 +1807,14 @@ def hooks_status(cfg: dict, max_age_s: float = 900, force: bool = False) -> dict
     out["last_desktop_event"] = last_desktop
     out["last_desktop_event_ago"] = ago(parse_iso(last_desktop)) if last_desktop else None
     out["desktop_loaded"] = bool(last_desktop)
+    # after an upgrade the desktop keeps running the previous cached copy until it reloads: compare the newest
+    # desktop hook event with the install time of the current version's cache directory
+    cache_dir = os.path.join(CODEX_HOME, "plugins", "cache", PLUGIN_NAME, PLUGIN_NAME, VERSION)
+    installed_ts = os.path.getmtime(cache_dir) if os.path.isdir(cache_dir) else None
+    last_desktop_ts = parse_iso(last_desktop) if last_desktop else None
+    out["installed_ago"] = ago(installed_ts) if installed_ts else None
+    out["desktop_loaded_current"] = bool(installed_ts and last_desktop_ts and last_desktop_ts >= installed_ts)
+    out["stale_since_install_s"] = round(now() - installed_ts) if installed_ts and not out["desktop_loaded_current"] else None
     return out
 
 
@@ -2291,6 +2300,8 @@ def cmd_doctor(args) -> int:
           + ("" if recent else "  → restart the Codex app, send any message, then re-run doctor"))
     print(f"  {'✅' if hs.get('desktop_loaded') else '⚠️ '} Codex Desktop has fired these hooks: "
           + (f"yes, last {hs.get('last_desktop_event_ago')}" if hs.get("desktop_loaded") else "not yet  → the desktop app loads plugins and hook trust at start: quit and reopen it"))
+    if hs.get("desktop_loaded") and not hs.get("desktop_loaded_current"):
+        print(f"  ⚠️  none since this version was installed ({hs.get('installed_ago')}); the desktop may still run the previous copy → quit and reopen it if this persists")
     try:
         parse_frequency(cfg.get("frequency"))
         check(True, f"frequency {cfg.get('frequency')!r}, mode {cfg.get('mode')!r}, queries {cfg.get('queries')}")

@@ -168,6 +168,9 @@ struct PanelView: View {
             if h.desktopLoaded != true {
                 return ("Codex app has not loaded the plugin yet · quit and reopen Codex", true)
             }
+            if h.desktopLoadedCurrent != true, let stale = h.staleSinceInstallS, stale > 240 {
+                return ("Codex app still runs the previous version · quit and reopen Codex", true)
+            }
             return ("Hooks alive in Codex · last \(h.lastDesktopEventAgo ?? "just now")", false)
         }
     }

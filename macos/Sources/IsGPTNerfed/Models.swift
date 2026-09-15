@@ -42,6 +42,9 @@ struct HooksInfo: Codable {
     var lastDesktopEvent: String?
     var lastDesktopEventAgo: String?
     var desktopLoaded: Bool?
+    var installedAgo: String?
+    var desktopLoadedCurrent: Bool?
+    var staleSinceInstallS: Double?
 }
 
 struct Overall: Codable {
