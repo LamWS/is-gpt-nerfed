@@ -15,9 +15,16 @@ struct Snapshot: Codable {
     var globalProbe: ProbeSummary?
     var globalRunning: Bool?
     var globalAlert: Bool?
+    var account: AccountInfo?
+    var hiddenOtherAccounts: Int?
     var threads: [ThreadInfo]
     var recentProbes: [ProbeSummary]
     var demo: Bool?
+}
+
+struct AccountInfo: Codable {
+    var label: String?
+    var plan: String?
 }
 
 struct Overall: Codable {
@@ -42,6 +49,7 @@ struct DGCConfig: Codable {
     var haltOnMismatch: Bool
     var mismatchConfidence: Double?
     var confirmUncertain: Bool?
+    var showOtherAccounts: Bool?
     var petName: String
 }
 

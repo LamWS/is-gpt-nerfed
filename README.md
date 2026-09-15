@@ -17,7 +17,7 @@ from [ModelTrace](https://github.com/xqy2006/ModelTrace) by xqy2006 (MIT); see *
   <img src="docs/panel-icon-normal.png" width="44" alt="menu bar icon, all clear">
   <img src="docs/panel-icon-warn.png" width="44" alt="menu bar icon, suspicious">
   <img src="docs/panel-icon-alert.png" width="44" alt="menu bar icon, downgraded">
-  <br><sub>Menu bar glyph: all clear · suspicious · downgraded. Panels above are self-rendered sample data (<code>DGC_DEMO=1 DoesGPTCheat --render</code>); the live panel uses Liquid Glass.</sub>
+  <br><sub>Menu bar glyph: all clear · suspicious · downgraded. Panels above are self-rendered sample data (<code>DGC_DEMO=1 DoesGPTCheat --render</code>); the live panel sits on Liquid Glass.</sub>
 </p>
 
 ## How it works

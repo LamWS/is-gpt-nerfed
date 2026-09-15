@@ -1,42 +1,36 @@
 import SwiftUI
 
-// MARK: - Type scale (compact, native): title 13 semibold · meta 11 secondary · pill 10 bold · time 11 tertiary
-
-private enum Type {
-    static let title = Font.system(size: 13, weight: .semibold)
-    static let meta = Font.system(size: 11)
-    static let pill = Font.system(size: 10, weight: .bold)
-    static let section = Font.system(size: 10, weight: .semibold)
-    static let name = Font.system(size: 14, weight: .semibold)
-}
+// MARK: - Verdict presentation: one colored word, no pills, no icons
 
 extension ProbeSummary {
     var tint: Color {
         if isDowngrade == true { return .red }
         switch verdict {
         case "MATCH": return .green
-        case "MISMATCH": return .orange
-        case "SUSPICIOUS": return .orange
-        case "UNLISTED": return .yellow
+        case "MISMATCH", "SUSPICIOUS": return .orange
         default: return .secondary
         }
     }
 
-    /// Short pill text; the direction carries the meaning, so "MISMATCH · downgrade" becomes "DOWNGRADE".
-    var label: String {
-        guard let v = verdict else { return (status ?? "?").uppercased() }
+    /// Sentence-case verdict word; the direction carries the meaning ("Downgrade" rather than "Mismatch · downgrade").
+    var word: String {
+        guard let v = verdict else { return status == "failed" ? "Failed" : "…" }
         switch (v, direction) {
-        case ("DOWNGRADED!", _): return "DOWNGRADED"
-        case ("MISMATCH", "downgrade"?): return "DOWNGRADE"
-        case ("MISMATCH", "upgrade"?): return "UPGRADE"
-        case ("MISMATCH", _): return "REROUTED"
-        default: return v
+        case ("DOWNGRADED!", _): return "Downgraded"
+        case ("MISMATCH", "downgrade"?): return "Downgrade"
+        case ("MISMATCH", "upgrade"?): return "Upgrade"
+        case ("MISMATCH", _): return "Rerouted"
+        case ("SUSPICIOUS", _): return "Suspicious"
+        case ("MATCH", _): return "Match"
+        case ("UNLISTED", _): return "Unlisted"
+        case ("INVALID", _): return "Invalid"
+        default: return v.capitalized
         }
     }
 
     var isFailure: Bool { verdict == "INVALID" || status == "failed" }
 
-    /// One dense line: "gpt-5.6-luna 91% · declared 3% · 2 rounds · retried ×1"
+    /// "gpt-5.6-luna 91%, declared 3% · 2 rounds · retried once"
     var detail: String {
         var parts: [String] = []
         if isFailure {
@@ -44,12 +38,12 @@ extension ProbeSummary {
         } else {
             var s = prediction ?? "?"
             if !probabilityText.isEmpty { s += " \(probabilityText)" }
+            if let e = expected, e != prediction, let pe = pExpected { s += ", declared \(Self.pct(pe))" }
             parts.append(s)
-            if let e = expected, e != prediction, let pe = pExpected { parts.append("declared \(Self.pct(pe))") }
-            if let n = usedOutputs, let q = queries, n < q { parts.append("\(n)/\(q) answers") }
+            if let n = usedOutputs, let q = queries, n < q { parts.append("\(n) of \(q) answers") }
             if let r = rounds, r > 1 { parts.append("\(r) rounds") }
         }
-        if let r = retries, r > 0 { parts.append("retried ×\(r)") }
+        if let r = retries, r > 0 { parts.append(r == 1 ? "retried once" : "retried \(r)×") }
         return parts.joined(separator: " · ")
     }
 }
@@ -61,35 +55,21 @@ private func petFace(alert: Bool, warn: Bool, running: Bool) -> String {
     return "(•ᴗ•)"
 }
 
-struct VerdictPill: View {
+/// "Match · gpt-6-astra 100% · 10h ago" as one line, verdict word colored.
+struct VerdictLine: View {
     let probe: ProbeSummary
     var body: some View {
-        Text(probe.label)
-            .font(Type.pill)
-            .padding(.horizontal, 6).padding(.vertical, 2)
-            .background(probe.tint.opacity(0.16), in: Capsule())
-            .foregroundStyle(probe.tint)
-            .lineLimit(1)
-            .fixedSize()
-    }
-}
-
-struct SectionTitle: View {
-    let text: String
-    var trailing: String? = nil
-    var body: some View {
-        HStack {
-            Text(text.uppercased()).font(Type.section).tracking(0.6).foregroundStyle(.secondary)
-            Spacer()
-            if let t = trailing { Text(t).font(Type.meta).foregroundStyle(.tertiary).lineLimit(1) }
+        HStack(spacing: 4) {
+            Text(probe.word).font(Type.strong).foregroundStyle(probe.tint)
+            Text("·").foregroundStyle(.tertiary)
+            Text(probe.detail).foregroundStyle(.secondary).lineLimit(1)
+            if let ago = probe.finishedAgo, !ago.isEmpty {
+                Text("·").foregroundStyle(.tertiary)
+                Text(ago).monospacedDigit().foregroundStyle(.tertiary)
+            }
         }
-    }
-}
-
-struct TimeStamp: View {
-    let text: String?
-    var body: some View {
-        Text(text ?? "").font(Type.meta).monospacedDigit().foregroundStyle(.tertiary).lineLimit(1)
+        .font(Type.text)
+        .help(probe.quote ?? "")
     }
 }
 
@@ -106,17 +86,15 @@ struct PanelView: View {
     }
 
     var body: some View {
-        GlassEffectContainer(spacing: 10) {
-            VStack(spacing: 10) {
-                header
-                fresh
-                threads
-                if showSettings { SettingsView().dgcGlass() }
-                footer
-            }
+        VStack(spacing: 14) {
+            header
+            fresh
+            threads
+            if showSettings { SettingsView() }
+            footer
         }
-        .padding(10)
-        .frame(width: 440)
+        .padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 10)
+        .frame(width: 420)
         .task { store.start() }
         .onAppear { Task { await store.refresh() } }
     }
@@ -124,57 +102,39 @@ struct PanelView: View {
     // MARK: header
 
     private var header: some View {
-        HStack(alignment: .center, spacing: 10) {
+        HStack(spacing: 12) {
             Text(petFace(alert: store.isAlert, warn: store.isWarn, running: store.isRunning))
-                .font(.system(size: 18, weight: .semibold, design: .rounded))
-                .frame(width: 56, height: 40)
-                .dgcGlass(tint: store.isAlert ? .red.opacity(0.35) : (store.isWarn ? .orange.opacity(0.3) : nil), radius: 12)
-            VStack(alignment: .leading, spacing: 3) {
+                .font(.system(size: 17, weight: .semibold, design: .rounded))
+                .frame(width: 52, height: 36)
+                .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text(store.snapshot?.config.petName ?? "Inspector Astra").font(Type.name)
-                    if store.snapshot?.demo == true { Text("demo").font(Type.pill).foregroundStyle(.tertiary) }
+                    Text(store.snapshot?.config.petName ?? "Inspector Astra").font(Type.title)
+                    if store.snapshot?.demo == true { Text("sample data").font(Type.text).foregroundStyle(.tertiary) }
                 }
-                HStack(spacing: 5) {
-                    Circle()
-                        .fill(store.isAlert ? Color.red : (store.isWarn ? Color.orange : (store.isRunning ? Color.blue : Color.green)))
-                        .frame(width: 7, height: 7)
-                    Text(statusLine)
-                        .font(Type.meta.weight(store.isAlert || store.isWarn ? .semibold : .regular))
-                        .foregroundStyle(store.isAlert ? .red : (store.isWarn ? .orange : .secondary))
-                        .lineLimit(1)
-                }
-                recentDots
+                Text(statusWord)
+                    .font(store.isAlert || store.isWarn ? Type.strong : Type.text)
+                    .foregroundStyle(store.isAlert ? .red : (store.isWarn ? .orange : .secondary))
+                    .lineLimit(1)
+                Text(statusRest).font(Type.text).foregroundStyle(.tertiary).lineLimit(1)
             }
-            Spacer(minLength: 4)
-            DGCButton(title: "Refresh", systemImage: "arrow.clockwise", iconOnly: true) { Task { await store.refresh() } }
-                .controlSize(.small)
-                .help("Refresh now")
+            Spacer()
         }
-        .padding(10)
-        .dgcGlass()
     }
 
-    private var statusLine: String {
+    private var statusWord: String {
         if let err = store.lastError { return "dgc error: \(err)" }
-        guard let s = store.snapshot else { return "loading…" }
-        return s.overall.message
+        guard let s = store.snapshot else { return "Loading…" }
+        let m = s.overall.message
+        return m.prefix(1).uppercased() + m.dropFirst()
     }
 
-    private var hooksLine: String {
-        if let ago = store.snapshot?.hooksLastEventAgo, !ago.isEmpty { return "hooks alive \(ago)" }
-        return "no hook events yet"
-    }
-
-    @ViewBuilder private var recentDots: some View {
-        let recent = store.snapshot?.recentProbes ?? []
-        HStack(spacing: 3) {
-            ForEach(recent.prefix(12)) { p in
-                Circle().fill(p.isFailure ? Color.secondary.opacity(0.4) : p.tint).frame(width: 6, height: 6)
-                    .help("\(p.label) · \(p.detail) · \(p.finishedAgo ?? "")")
-            }
-            Text(recent.isEmpty ? hooksLine : "\(min(recent.count, 12)) probes · \(hooksLine)")
-                .font(Type.meta).foregroundStyle(.tertiary).lineLimit(1).padding(.leading, recent.isEmpty ? 0 : 3)
-        }
+    private var statusRest: String {
+        guard let s = store.snapshot, store.lastError == nil else { return "" }
+        var parts: [String] = []
+        if let acct = s.account?.label, !acct.isEmpty { parts.append(acct) }
+        if let ago = s.hooksLastEventAgo, !ago.isEmpty { parts.append("hooks alive \(ago)") } else { parts.append("no hook events yet") }
+        return parts.joined(separator: " · ")
     }
 
     // MARK: fresh session (global probe)
@@ -183,94 +143,79 @@ struct PanelView: View {
         let snap = store.snapshot
         let running = snap?.globalRunning ?? false
         let last = snap?.globalProbe
-        let alert = snap?.globalAlert ?? false
-        return VStack(alignment: .leading, spacing: 6) {
-            SectionTitle(text: "Fresh session", trailing: "\(snap?.defaultModel ?? "default model")\(snap?.defaultEffort.map { " @ \($0)" } ?? "") · no thread context")
-            HStack(alignment: .center, spacing: 8) {
-                Image(systemName: "sparkles").font(.system(size: 12)).foregroundStyle(alert ? Color.red : Color.accentColor)
+        return Group(title: "Fresh session", trailing: "\(snap?.defaultModel ?? "default model")\(snap?.defaultEffort.map { " @ \($0)" } ?? "")") {
+            HStack(spacing: 8) {
+                Circle().fill(last.map { $0.isFailure ? Color.secondary.opacity(0.35) : $0.tint } ?? Color.secondary.opacity(0.35))
+                    .frame(width: 7, height: 7)
                 if running {
                     ProgressView().controlSize(.mini)
-                    Text("probing \(snap?.config.queries ?? 3) new ephemeral sessions…").font(Type.meta)
+                    Text("Probing \(snap?.config.queries ?? 3) new ephemeral sessions…").font(Type.text).foregroundStyle(.secondary)
                 } else if let p = last {
-                    VerdictPill(probe: p)
-                    Text(p.detail).font(Type.meta).foregroundStyle(.secondary).lineLimit(1).help(p.quote ?? "")
-                    Spacer(minLength: 4)
-                    TimeStamp(text: p.finishedAgo)
+                    VerdictLine(probe: p)
                 } else {
-                    Text("never probed").font(Type.meta).foregroundStyle(.tertiary)
+                    Text("Never probed · a new session, no thread context").font(Type.text).foregroundStyle(.secondary)
                 }
+                Spacer(minLength: 8)
                 if !running {
-                    Spacer(minLength: 0)
-                    actionButton(retry: last?.retryable == true, help: "Start brand-new ephemeral sessions and fingerprint what a new session gets") { store.probeFresh() }
+                    TextButton(title: last?.retryable == true ? "Retry" : "Probe") { store.probeFresh() }
+                        .help("Start brand-new ephemeral sessions and fingerprint what a new session gets")
                 }
             }
+            .padding(.horizontal, 10).padding(.vertical, 8)
         }
-        .padding(10)
-        .dgcGlass(tint: alert ? .red.opacity(0.25) : nil)
     }
 
     // MARK: threads
 
     private var threads: some View {
         let list = store.snapshot?.threads ?? []
-        return VStack(alignment: .leading, spacing: 6) {
-            SectionTitle(text: "Active threads", trailing: list.isEmpty ? nil : "\(list.count) in the last 48 h · each probe forks that thread")
-            if !list.isEmpty {
-                if plain {  // offscreen self-portrait: ScrollView does not render, show the first rows flat
-                    VStack(spacing: 4) { ForEach(list.prefix(6)) { t in ThreadRow(thread: t) } }
-                } else {
-                    ScrollView {
-                        VStack(spacing: 4) { ForEach(list) { t in ThreadRow(thread: t) } }
+        let hidden = store.snapshot?.hiddenOtherAccounts ?? 0
+        var trailing = list.isEmpty ? nil : "\(list.count) in 48 h"
+        if hidden > 0 { trailing = (trailing ?? "") + " · \(hidden) from other accounts hidden" }
+        return Group(title: "Active threads", trailing: trailing) {
+            if list.isEmpty {
+                Text(store.snapshot == nil ? "Reading the ledger…" : "No Codex threads in the last 48 hours.")
+                    .font(Type.text).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 40)
+            } else if plain {  // offscreen self-portrait: ScrollView does not render
+                VStack(spacing: 0) {
+                    ForEach(Array(list.prefix(6).enumerated()), id: \.element.id) { i, t in
+                        if i > 0 { RowSeparator() }
+                        ThreadRow(thread: t)
                     }
-                    .frame(maxHeight: 330)
                 }
             } else {
-                Text(store.snapshot == nil ? "Reading the ledger…" : "No Codex threads in the last 48 hours.")
-                    .font(Type.meta).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, minHeight: 44)
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(Array(list.enumerated()), id: \.element.id) { i, t in
+                            if i > 0 { RowSeparator() }
+                            ThreadRow(thread: t)
+                        }
+                    }
+                }
+                .frame(maxHeight: 330)
             }
         }
-        .padding(10)
-        .dgcGlass()
     }
 
     // MARK: footer
 
     private var footer: some View {
-        HStack {
-            DGCButton(title: showSettings ? "Hide settings" : "Settings", systemImage: "slider.horizontal.3") {
-                withAnimation(.snappy) { showSettings.toggle() }
-            }
-            DGCButton(title: "Report", systemImage: "doc.text.magnifyingglass") {
+        HStack(spacing: 16) {
+            TextButton(title: showSettings ? "Hide settings" : "Settings") { withAnimation(.snappy) { showSettings.toggle() } }
+            TextButton(title: "Report") {
                 Task { await store.loadReport() }
                 openWindow(id: "report")
             }
             Spacer()
-            if let v = store.snapshot?.version {
-                Text("dgc \(v)").font(Type.meta).foregroundStyle(.tertiary)
-            }
-            DGCButton(title: "Quit", systemImage: "power") { NSApplication.shared.terminate(nil) }
+            if let v = store.snapshot?.version { Text("v\(v)").font(Type.text).foregroundStyle(.tertiary) }
+            TextButton(title: "Quit", color: .secondary) { NSApplication.shared.terminate(nil) }
         }
-        .controlSize(.small)
+        .padding(.horizontal, 2)
     }
 }
 
-// MARK: - Shared action button
-
-@ViewBuilder
-func actionButton(retry: Bool, help: String, action: @escaping () -> Void) -> some View {
-    if retry {
-        DGCButton(title: "Retry", systemImage: "arrow.clockwise", prominent: true, iconOnly: true, action: action)
-            .controlSize(.small)
-            .help("The last probe failed on transport/network even after one automatic retry; run it again")
-    } else {
-        DGCButton(title: "Probe", systemImage: "play.fill", iconOnly: true, action: action)
-            .controlSize(.small)
-            .help(help)
-    }
-}
-
-// MARK: - Thread row
+// MARK: - Thread row: title + time · model line · verdict line · evidence (only when present)
 
 struct ThreadRow: View {
     @Environment(Store.self) private var store
@@ -279,69 +224,57 @@ struct ThreadRow: View {
     private var dot: Color {
         if thread.alert { return .red }
         if thread.suspicious == true { return .orange }
-        return thread.active ? .green : .secondary.opacity(0.35)
+        if let p = thread.lastProbe, p.verdict == "MATCH" { return .green }
+        return .secondary.opacity(0.35)
     }
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             Circle().fill(dot).frame(width: 7, height: 7).padding(.top, 5)
             VStack(alignment: .leading, spacing: 2) {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(thread.title).font(Type.title).lineLimit(1)
                     Spacer(minLength: 4)
-                    TimeStamp(text: thread.updatedAgo)
+                    Text(thread.updatedAgo ?? "").font(Type.text).monospacedDigit().foregroundStyle(.tertiary)
+                    action
                 }
-                Text(meta).font(Type.meta).foregroundStyle(.secondary).lineLimit(1)
-                probeLine
+                Text(meta).font(Type.text).foregroundStyle(.secondary).lineLimit(1)
+                if thread.probeRunning {
+                    HStack(spacing: 5) {
+                        ProgressView().controlSize(.mini)
+                        Text("Probing, ephemeral forks in flight…").font(Type.text).foregroundStyle(.secondary)
+                    }
+                } else if let p = thread.lastProbe {
+                    VerdictLine(probe: p)
+                }
                 if thread.hardEvidence > 0, let ev = thread.lastEvidence {
-                    Label(ev, systemImage: "exclamationmark.triangle.fill").font(Type.meta).foregroundStyle(.red).lineLimit(2)
+                    Text("Evidence: \(ev)").font(Type.text).foregroundStyle(.red).lineLimit(2)
                 } else if thread.softEvidence > 0, let ev = thread.lastEvidence {
-                    Label(ev, systemImage: "questionmark.circle").font(Type.meta).foregroundStyle(.orange).lineLimit(1)
+                    Text("Check: \(ev)").font(Type.text).foregroundStyle(.orange).lineLimit(1)
                 }
             }
-            actions
         }
-        .padding(.horizontal, 8).padding(.vertical, 7)
-        .dgcGlass(tint: thread.alert ? .red.opacity(0.22) : (thread.suspicious == true ? .orange.opacity(0.18) : nil), radius: 10)
+        .padding(.horizontal, 10).padding(.vertical, 7)
     }
 
     private var meta: String {
         var parts = ["\(thread.model ?? "?")\(thread.effort.map { " @ \($0)" } ?? "")"]
         if thread.turns > 0 { parts.append("\(thread.turns) turns") }
+        if thread.lastProbe == nil && !thread.probeRunning { parts.append("no probe yet") }
         if thread.halted { parts.append("halted") }
         if thread.due { parts.append("probe due") }
         return parts.joined(separator: " · ")
     }
 
-    @ViewBuilder private var probeLine: some View {
-        if thread.probeRunning {
-            HStack(spacing: 5) {
-                ProgressView().controlSize(.mini)
-                Text("probing… ephemeral forks in flight").font(Type.meta).foregroundStyle(.secondary)
-            }
-        } else if let p = thread.lastProbe {
-            HStack(spacing: 5) {
-                VerdictPill(probe: p)
-                Text(p.detail).font(Type.meta).foregroundStyle(.secondary).lineLimit(1)
-                Spacer(minLength: 2)
-                TimeStamp(text: p.finishedAgo)
-            }
-            .help(p.quote ?? "")
-        } else {
-            Text("no probe yet").font(Type.meta).foregroundStyle(.tertiary)
-        }
-    }
-
-    @ViewBuilder private var actions: some View {
+    @ViewBuilder private var action: some View {
         if thread.probeRunning {
             EmptyView()
         } else if thread.halted {
-            DGCButton(title: "Resume", systemImage: "lock.open", prominent: true, iconOnly: true) { Task { await store.resume(thread) } }
-                .tint(.red).controlSize(.small)
+            TextButton(title: "Resume", color: .red) { Task { await store.resume(thread) } }
                 .help("Clear the halt (work tools are denied in this thread)")
         } else {
-            actionButton(retry: thread.lastProbe?.retryable == true,
-                         help: "Fork this thread ephemerally (3 parallel forks) and fingerprint the answering model") { store.probe(thread) }
+            TextButton(title: thread.lastProbe?.retryable == true ? "Retry" : "Probe") { store.probe(thread) }
+                .help("Fork this thread ephemerally (3 parallel forks) and fingerprint the answering model")
         }
     }
 }

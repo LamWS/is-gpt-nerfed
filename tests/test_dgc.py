@@ -345,6 +345,32 @@ class ForkProbeTests(unittest.TestCase):
         rc, out = run_cli(["status"])
         self.assertEqual(rc, 0)
 
+    def test_records_follow_the_signed_in_account(self):
+        auth = os.path.join(os.environ["CODEX_HOME"], "auth.json")
+
+        def sign_in(account_id):
+            with open(auth, "w") as f:
+                json.dump({"auth_mode": "chatgpt", "tokens": {"account_id": account_id}}, f)
+
+        sign_in("account-A")
+        a = dgc.current_account()
+        self.assertNotIn("account-A", json.dumps(a), "raw account id must never be stored")
+        run_cli(["probe", "now", "--mode", "fork", "--thread", "acct-thread-A"], {"FAKE_CODEX_MODEL": "gpt-6-astra"})
+        rec = [r for r in dgc.iter_jsonl(dgc.PROBES_INDEX) if r["thread_id"] == "acct-thread-A"][-1]
+        self.assertEqual(rec["account_id"], a["id"])
+        rc, out = run_cli(["snapshot", "--json"])
+        self.assertIn("acct-thread-A", out)
+        sign_in("account-B")
+        rc, out = run_cli(["snapshot", "--json"])
+        snap = json.loads(out)
+        self.assertNotIn("acct-thread-A", [t["id"] for t in snap["threads"]])
+        self.assertGreaterEqual(snap["hidden_other_accounts"], 1)
+        rc, out = run_cli(["snapshot", "--json", "--all-accounts"])
+        self.assertIn("acct-thread-A", out)
+        rc, out = run_cli(["report"])
+        self.assertIn("hidden", out)
+        os.remove(auth)
+
     def test_hook_never_crashes(self):
         with mock.patch.object(sys, "stdin", io.StringIO("this is not json")), \
                 mock.patch.object(sys.stdin, "isatty", return_value=False, create=True):

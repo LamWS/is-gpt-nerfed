@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Grouped, label-left / control-right rows in the spirit of macOS System Settings, kept to one screen.
+/// Label-left / control-right rows, four quiet groups, sentence case throughout.
 struct SettingsView: View {
     @Environment(Store.self) private var store
     @Environment(\.plainRendering) private var plain
@@ -8,47 +8,53 @@ struct SettingsView: View {
 
     private let frequencies: [(String, String)] = [
         ("manual", "Manually"), ("turns:4", "Every 4 turns"), ("turns:8", "Every 8 turns"), ("turns:16", "Every 16 turns"),
-        ("30m", "Every 30 min"), ("1h", "Every hour"), ("2h", "Every 2 hours"),
+        ("30m", "Every 30 minutes"), ("1h", "Every hour"), ("2h", "Every 2 hours"),
     ]
-    private let modes: [(String, String)] = [("auto", "Probe in background"), ("nudge", "Only remind me")]
+    private let modes: [(String, String)] = [("auto", "Probe in the background"), ("nudge", "Only remind me")]
+    private let languages: [(String, String)] = [("zh,en", "Chinese and English"), ("zh", "Chinese"), ("en", "English")]
     private let confidences: [(Double, String)] = [(0.7, "70%"), (0.8, "80%"), (0.9, "90%"), (0.95, "95%")]
 
     var body: some View {
         let cfg = store.snapshot?.config
-        VStack(alignment: .leading, spacing: 8) {
-            group("Schedule") {
+        VStack(alignment: .leading, spacing: 14) {
+            Group(title: "Schedule") {
                 row("Probe each thread") { picker(cfg?.frequency ?? "turns:8", frequencies, key: "frequency") }
+                RowSeparator()
                 row("When a probe is due") { picker(cfg?.mode ?? "auto", modes, key: "mode") }
+                RowSeparator()
                 row("Forks per probe") {
                     segments(["1", "2", "3"], selected: String(cfg?.queries ?? 3)) { v in Task { await store.setConfig("queries", v) } }
                         .frame(width: 110)
                 }
-                row("Prompt language") {
-                    HStack(spacing: 4) {
-                        langToggle("zh", cfg)
-                        langToggle("en", cfg)
-                    }
-                }
+                RowSeparator()
+                row("Prompt language") { picker((cfg?.languages ?? ["zh", "en"]).joined(separator: ","), languages, key: "languages") }
+                RowSeparator()
                 row("Run the forks in parallel") { toggle("parallel", cfg?.parallel ?? true) }
             }
-            group("Verdict") {
+            Group(title: "Verdict") {
                 row("Call a mismatch at") {
                     segments(confidences.map(\.1), selected: label(for: cfg?.mismatchConfidence ?? 0.8)) { v in
                         if let c = confidences.first(where: { $0.1 == v }) { Task { await store.setConfig("mismatch_confidence", String(c.0)) } }
                     }
                     .frame(width: 190)
                 }
+                RowSeparator()
                 row("Confirm a suspicious round with a second one") { toggle("confirm_uncertain", cfg?.confirmUncertain ?? true) }
+                RowSeparator()
                 row("Halt the thread after a mismatch") { toggle("halt_on_mismatch", cfg?.haltOnMismatch ?? false) }
-                row("Passive rollout scan on every turn") { toggle("passive", cfg?.passive ?? true) }
+                RowSeparator()
+                row("Scan rollouts on every turn") { toggle("passive", cfg?.passive ?? true) }
             }
-            group("Alerts") {
+            Group(title: "Alerts") {
                 row("Notifications") { toggle("notify", cfg?.notify ?? true) }
-                row("Also notify on MATCH") { toggle("notify_on_ok", cfg?.notifyOnOk ?? false) }
-                row("Post MATCH verdicts into the thread") { toggle("announce_ok", cfg?.announceOk ?? false) }
+                RowSeparator()
+                row("Also notify on a match") { toggle("notify_on_ok", cfg?.notifyOnOk ?? false) }
+                RowSeparator()
+                row("Post matches into the thread") { toggle("announce_ok", cfg?.announceOk ?? false) }
+                RowSeparator()
                 row("Sound on a downgrade") { toggle("sound", cfg?.sound ?? true) }
             }
-            group("App") {
+            Group(title: "App") {
                 row("Pet name") {
                     if plain {
                         PlainField(text: cfg?.petName ?? "Inspector Astra")
@@ -58,6 +64,9 @@ struct SettingsView: View {
                             .onSubmit { Task { await store.setConfig("pet_name", petName) } }
                     }
                 }
+                RowSeparator()
+                row("Show records from other accounts") { toggle("show_other_accounts", cfg?.showOtherAccounts ?? false) }
+                RowSeparator()
                 row("Launch at login") {
                     if plain {
                         PlainSwitch(on: store.launchAtLogin)
@@ -66,35 +75,21 @@ struct SettingsView: View {
                             .toggleStyle(.switch).labelsHidden().controlSize(.mini)
                     }
                 }
-                if let ledger = store.snapshot?.ledger {
-                    Text("Ledger: \(ledger)").font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1).padding(.top, 3)
-                }
             }
         }
-        .padding(10)
         .onAppear { petName = store.snapshot?.config.petName ?? "" }
         .onChange(of: store.snapshot?.config.petName) { _, new in if let new, !new.isEmpty { petName = new } }
     }
 
     // MARK: building blocks
 
-    private func group<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(title.uppercased()).font(.system(size: 10, weight: .semibold)).tracking(0.6).foregroundStyle(.secondary)
-                .padding(.bottom, 4)
-            VStack(spacing: 0) { content() }
-                .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        }
-    }
-
     private func row<Control: View>(_ title: String, @ViewBuilder control: () -> Control) -> some View {
         HStack(spacing: 8) {
-            Text(title).font(.system(size: 11)).lineLimit(1)
+            Text(title).font(Type.text).lineLimit(1)
             Spacer(minLength: 8)
             control()
         }
-        .padding(.horizontal, 8).padding(.vertical, 5)
-        .overlay(alignment: .bottom) { Divider().opacity(0.5).padding(.leading, 8) }
+        .padding(.horizontal, 10).padding(.vertical, 6)
     }
 
     @ViewBuilder
@@ -106,7 +101,7 @@ struct SettingsView: View {
                 ForEach(options, id: \.0) { Text($0.1).tag($0.0) }
                 if !options.contains(where: { $0.0 == current }) { Text(current).tag(current) }
             }
-            .labelsHidden().frame(width: 150)
+            .labelsHidden().controlSize(.small).frame(width: 170)
         }
     }
 
@@ -118,7 +113,7 @@ struct SettingsView: View {
             Picker("", selection: Binding(get: { selected }, set: set)) {
                 ForEach(options, id: \.self) { Text($0).tag($0) }
             }
-            .pickerStyle(.segmented).labelsHidden()
+            .pickerStyle(.segmented).labelsHidden().controlSize(.small)
         }
     }
 
@@ -130,19 +125,6 @@ struct SettingsView: View {
             Toggle("", isOn: Binding(get: { value }, set: { v in Task { await store.setConfig(key, v ? "true" : "false") } }))
                 .toggleStyle(.switch).labelsHidden().controlSize(.mini)
         }
-    }
-
-    private func langToggle(_ lang: String, _ cfg: DGCConfig?) -> some View {
-        let langs = cfg?.languages ?? ["zh", "en"]
-        return Toggle(lang, isOn: Binding(
-            get: { langs.contains(lang) },
-            set: { on in
-                var next = langs.filter { $0 != lang }
-                if on { next.append(lang) }
-                if next.isEmpty { next = [lang] }
-                Task { await store.setConfig("languages", next.joined(separator: ",")) }
-            }))
-        .toggleStyle(.button).controlSize(.small)
     }
 
     private func label(for confidence: Double) -> String {

@@ -1,7 +1,7 @@
 import SwiftUI
 
-// Liquid Glass everywhere in the real menu bar panel; a flat fallback when the panel renders itself
-// offscreen (ImageRenderer cannot composite glass or AppKit-backed controls), used by `DoesGPTCheat --render`.
+// The menu bar popover is already Liquid Glass; content inside stays flat and quiet.
+// `plainRendering` is set only by `DoesGPTCheat --render`, where AppKit-backed controls cannot be drawn.
 
 private struct PlainRenderingKey: EnvironmentKey {
     static let defaultValue = false
@@ -14,68 +14,69 @@ extension EnvironmentValues {
     }
 }
 
-struct DGCGlass: ViewModifier {
-    @Environment(\.plainRendering) private var plain
-    var tint: Color? = nil
-    var radius: CGFloat = 16
+/// Type scale: exactly two sizes and two weights.
+///   title  13pt semibold   thread titles, pet name
+///   text   11pt regular    everything else; semibold only for the verdict word and section headers
+enum Type {
+    static let title = Font.system(size: 13, weight: .semibold)
+    static let text = Font.system(size: 11)
+    static let strong = Font.system(size: 11, weight: .semibold)
+}
 
-    func body(content: Content) -> some View {
-        if plain {
-            let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
-            content
-                .background(Color(nsColor: .controlBackgroundColor), in: shape)
-                .background((tint ?? .clear).opacity(tint == nil ? 0 : 0.6), in: shape)
-                .overlay(shape.stroke(Color.primary.opacity(0.07)))
-                .shadow(color: .black.opacity(0.05), radius: 5, y: 2)
-        } else if let tint {
-            content.glassEffect(.regular.tint(tint), in: .rect(cornerRadius: radius))
-        } else {
-            content.glassEffect(.regular, in: .rect(cornerRadius: radius))
+/// A quiet group: one level of containment, hairline separators between rows, no nested cards.
+struct Group<Content: View>: View {
+    let title: String
+    var trailing: String? = nil
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(title).font(Type.strong).foregroundStyle(.secondary)
+                Spacer()
+                if let trailing { Text(trailing).font(Type.text).foregroundStyle(.tertiary).lineLimit(1) }
+            }
+            .padding(.horizontal, 2)
+            VStack(spacing: 0) { content }
+                .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         }
     }
 }
 
-extension View {
-    func dgcGlass(tint: Color? = nil, radius: CGFloat = 16) -> some View {
-        modifier(DGCGlass(tint: tint, radius: radius))
-    }
+struct RowSeparator: View {
+    var body: some View { Divider().opacity(0.6).padding(.leading, 10) }
 }
 
-struct DGCButton: View {
+/// Text-only action (Probe / Retry / Resume / Settings / Report / Quit). No icons anywhere in the panel.
+struct TextButton: View {
     @Environment(\.plainRendering) private var plain
     let title: String
-    let systemImage: String
-    var prominent = false
-    var iconOnly = false
+    var color: Color = .accentColor
     let action: () -> Void
 
     var body: some View {
-        if plain {
-            styled(Button(title, systemImage: systemImage, action: action).buttonStyle(.bordered))
-        } else if prominent {
-            styled(Button(title, systemImage: systemImage, action: action).buttonStyle(.glassProminent))
+        if plain {  // ImageRenderer cannot draw AppKit-backed buttons; the real panel shows the same text as a button
+            Text(title).font(Type.strong).foregroundStyle(color)
         } else {
-            styled(Button(title, systemImage: systemImage, action: action).buttonStyle(.glass))
+            Button(action: action) {
+                Text(title).font(Type.strong).foregroundStyle(color)
+            }
+            .buttonStyle(.borderless)
         }
-    }
-
-    @ViewBuilder private func styled<V: View>(_ v: V) -> some View {
-        if iconOnly { v.labelStyle(.iconOnly) } else { v }
     }
 }
 
-// MARK: - Faux controls for offscreen rendering (AppKit-backed pickers/toggles/fields do not render there)
+// MARK: - Faux controls for offscreen rendering
 
 struct PlainValue: View {
     let text: String
     var body: some View {
         HStack(spacing: 4) {
-            Text(text).font(.system(size: 11))
+            Text(text).font(Type.text)
             Image(systemName: "chevron.up.chevron.down").font(.system(size: 8, weight: .semibold)).foregroundStyle(.secondary)
         }
         .padding(.horizontal, 8).padding(.vertical, 3)
-        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).stroke(Color.primary.opacity(0.1)))
+        .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 }
 
@@ -97,21 +98,21 @@ struct PlainSegments: View {
     var body: some View {
         HStack(spacing: 2) {
             ForEach(options, id: \.self) { o in
-                Text(o).font(.system(size: 11, weight: o == selected ? .semibold : .regular))
+                Text(o).font(o == selected ? Type.strong : Type.text)
                     .padding(.horizontal, 8).padding(.vertical, 3)
                     .background(o == selected ? Color(nsColor: .controlBackgroundColor) : .clear, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
                     .shadow(color: .black.opacity(o == selected ? 0.08 : 0), radius: 1, y: 1)
             }
         }
         .padding(2)
-        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 }
 
 struct PlainField: View {
     let text: String
     var body: some View {
-        Text(text).font(.system(size: 11))
+        Text(text).font(Type.text)
             .padding(.horizontal, 6).padding(.vertical, 3).frame(width: 150, alignment: .leading)
             .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).stroke(Color.primary.opacity(0.15)))

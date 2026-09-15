@@ -80,6 +80,7 @@ DEFAULT_CONFIG = {
     "halt_on_mismatch": False,       # Guard-style: deny work tools after a mismatch until `dgc resume`
     "mismatch_confidence": 0.8,      # MISMATCH needs p(top) ≥ this, p(declared) ≤ 1-this and a score margin ≥ 0.5σ
     "confirm_uncertain": True,       # a SUSPICIOUS first round triggers one more round before the verdict is final
+    "show_other_accounts": False,    # after switching Codex accounts, hide records made under other accounts
     "pet_name": "Inspector Astra",
     "codex_bin": None,
     "nudge_cooldown_turns": 4,
@@ -201,7 +202,8 @@ def parse_frequency(s) -> tuple[str, int]:
 
 
 def coerce_config_value(key: str, value: str):
-    if key in ("passive", "notify", "notify_on_ok", "announce_ok", "sound", "parallel", "halt_on_mismatch", "confirm_uncertain"):
+    if key in ("passive", "notify", "notify_on_ok", "announce_ok", "sound", "parallel", "halt_on_mismatch", "confirm_uncertain",
+               "show_other_accounts"):
         return str(value).strip().lower() in ("1", "true", "yes", "on")
     if key == "mismatch_confidence":
         v = float(value)
@@ -304,6 +306,40 @@ def config_toml_model() -> tuple[str | None, str | None]:
 
 
 _BANK = None
+
+
+def current_account() -> dict:
+    """Identify the signed-in Codex account from auth.json: a hash of the account id (never the id itself),
+    a masked e-mail for display and the plan type. Nothing here leaves the machine."""
+    import base64
+    import hashlib
+    d = read_json(os.path.join(CODEX_HOME, "auth.json"), {}) or {}
+    tokens = d.get("tokens") or {}
+    account_id = tokens.get("account_id")
+    email = plan = None
+    tok = tokens.get("id_token")
+    if isinstance(tok, str) and tok.count(".") == 2:
+        try:
+            payload = tok.split(".")[1]
+            payload += "=" * (-len(payload) % 4)
+            pl = json.loads(base64.urlsafe_b64decode(payload))
+            email = pl.get("email")
+            auth = pl.get("https://api.openai.com/auth") or {}
+            plan = auth.get("chatgpt_plan_type")
+            account_id = account_id or auth.get("chatgpt_account_id")
+        except Exception:
+            pass
+    if not account_id and d.get("OPENAI_API_KEY"):
+        account_id = "apikey:" + hashlib.sha256(str(d["OPENAI_API_KEY"]).encode()).hexdigest()[:16]
+    if not account_id:
+        return {"id": "local", "label": "no account", "plan": None}
+    local, _, domain = (email or "").partition("@")
+    label = f"{local[:1]}…@{domain}" if domain else "signed in"
+    return {"id": hashlib.sha256(str(account_id).encode()).hexdigest()[:12], "label": label, "plan": plan}
+
+
+def account_visible(record_account: str | None, current: str, show_all: bool) -> bool:
+    return show_all or not record_account or record_account == current
 
 
 def load_bank() -> dict:
@@ -837,9 +873,12 @@ def finalize_probe(rec: dict, outputs: list[dict], expected: str | None, errors:
         rec["diagnostics"] = analysis["diagnostics"]
         rec["calibration"] = analysis["calibration"]
     write_json(probe_path(rec["id"]), rec)
-    append_jsonl(PROBES_INDEX, {k: rec.get(k) for k in ("id", "finished", "thread_id", "mode", "expected", "prediction",
-                                                        "probability", "p_expected", "margin", "confidence", "used_outputs",
-                                                        "queries", "rounds", "retries", "elapsed_s", "verdict", "direction", "status")})
+    rec.setdefault("account", current_account())
+    index_row = {k: rec.get(k) for k in ("id", "finished", "thread_id", "mode", "expected", "prediction", "probability", "p_expected",
+                                         "margin", "confidence", "used_outputs", "queries", "rounds", "retries", "elapsed_s",
+                                         "verdict", "direction", "status")}
+    index_row["account_id"] = (rec.get("account") or {}).get("id")
+    append_jsonl(PROBES_INDEX, index_row)
     facts = [f"probe {rec['id']}  ·  thread {rec.get('thread_id') or '?'}  ·  mode {rec.get('mode')}  ·  {n}/{q} answers used"
              + (f" in {rec['rounds']} rounds" if rec.get("rounds", 1) > 1 else "") + (f"  ·  retried ×{rec['retries']}" if rec.get("retries") else "")
              + f"  ·  {rec['elapsed_s']}s",
@@ -891,7 +930,7 @@ def run_fork_probe(thread_id: str, cfg: dict, queries: int | None = None, quiet:
         raise SystemExit("codex binary not found; set `dgc config set codex_bin /path/to/codex`")
     q = max(1, min(3, int(queries or cfg.get("queries") or 3)))
     rec = {"id": cas.new_probe_id(), "mode": "fork", "thread_id": thread_id, "started": iso(), "ts_start": now(),
-           "queries": q, "status": "running", "dgc_version": VERSION, "pid": os.getpid()}
+           "queries": q, "status": "running", "dgc_version": VERSION, "pid": os.getpid(), "account": current_account()}
     write_json(probe_path(rec["id"]), rec)
     with locked_session(thread_id) as st:
         st["probe_running"] = {"pid": os.getpid(), "ts": now(), "probe": rec["id"]}
@@ -975,7 +1014,8 @@ def run_fresh_probe(cfg: dict, model: str | None = None, effort: str | None = No
         raise SystemExit("no default model found; pass --model")
     q = max(1, min(3, int(queries or cfg.get("queries") or 3)))
     rec = {"id": cas.new_probe_id(), "mode": "fresh", "thread_id": None, "started": iso(), "ts_start": now(), "queries": q,
-           "status": "running", "dgc_version": VERSION, "pid": os.getpid(), "requested_model": model, "requested_effort": effort}
+           "status": "running", "dgc_version": VERSION, "pid": os.getpid(), "requested_model": model, "requested_effort": effort,
+           "account": current_account()}
     write_json(probe_path(rec["id"]), rec)
     write_json(os.path.join(DGC_HOME, FRESH_RUNNING), {"pid": os.getpid(), "ts": now(), "probe": rec["id"]})
     expected = model
@@ -1048,6 +1088,7 @@ def start_self_probe(parent_id: str | None, side_id: str | None, cfg: dict, expe
     rng = random.Random()
     rec = {"id": cas.new_probe_id(), "mode": "self", "thread_id": parent_id, "side_thread_id": side_id, "started": iso(),
            "ts_start": now(), "queries": q, "status": "open", "expected": expected, "answers": [], "dgc_version": VERSION,
+           "account": current_account(),
            "forks": [{"language": rng.choice(cfg.get("languages") or ["zh", "en"]), "count": rng.randint(*cas.COUNT_RANGE)} for _ in range(q)]}
     write_json(probe_path(rec["id"]), rec)
     print(challenge_text(rec, 0))
@@ -1227,6 +1268,8 @@ def cmd_hook(args) -> int:
     out: dict = {}
     with locked_session(sid) as st:
         st["hook_events"] = int(st.get("hook_events") or 0) + 1
+        if not st.get("account_id") or ev == "SessionStart":
+            st["account_id"] = current_account()["id"]
         for k in ("cwd", "model", "transcript_path"):
             if payload.get(k):
                 st[k] = payload[k]
@@ -1394,9 +1437,36 @@ def demo_snapshot(cfg: dict) -> dict:
     recent += [probe(f"r{i}", "pg17", "MATCH", expected="gpt-5.6-sol", pred="gpt-5.6-sol", p=1.0, ago_s=7200 + i * 3600) for i in range(5)]
     return {"generated": iso(), "version": VERSION, "dgc_bin": DGC_BIN, "ledger": "~/.codex/does-gpt-cheat", "config": cfg,
             "hooks_last_event": iso(t0 - 12), "hooks_last_event_ago": "12s ago",
+            "account": {"label": "y…@example.com", "plan": "plus"}, "hidden_other_accounts": 0,
             "overall": {"status": "alert", "downgraded": 1, "suspicious": 1, "running": 0, "message": "1 thread downgraded · 1 suspicious"},
             "default_model": "gpt-6-astra", "default_effort": "high", "global_probe": fresh, "global_running": False, "global_alert": False,
             "threads": threads, "recent_probes": recent, "demo": True}
+
+
+def migrate_untagged_records(account_id: str) -> None:
+    """Records made before account tagging existed belong to whoever is signed in now (runs once)."""
+    marker = os.path.join(DGC_HOME, ".accounts-migrated")
+    if os.path.exists(marker) or not os.path.exists(PROBES_INDEX):
+        return
+    rows = list(iter_jsonl(PROBES_INDEX))
+    if rows and any(not r.get("account_id") for r in rows):
+        tmp = PROBES_INDEX + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            for r in rows:
+                r.setdefault("account_id", account_id)
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        os.replace(tmp, PROBES_INDEX)
+        for r in rows:
+            rec = read_json(probe_path(r["id"]))
+            if rec and not rec.get("account"):
+                rec["account"] = {"id": account_id, "label": "", "plan": None}
+                write_json(probe_path(r["id"]), rec)
+    for st in all_sessions():
+        if not st.get("account_id"):
+            st["account_id"] = account_id
+            save_session(st)
+    with open(marker, "w") as f:
+        f.write(iso() + "\n")
 
 
 def cmd_snapshot(args) -> int:
@@ -1407,6 +1477,9 @@ def cmd_snapshot(args) -> int:
     if getattr(args, "demo", False):
         print(json.dumps(demo_snapshot(cfg), ensure_ascii=False, indent=2 if getattr(args, "pretty", False) else None))
         return 0
+    acct = current_account()
+    migrate_untagged_records(acct["id"])
+    show_all = bool(getattr(args, "all_accounts", False) or cfg.get("show_other_accounts"))
     horizon = float(getattr(args, "hours", 48) or 48) * 3600
     cutoff = now() - horizon
     threads: dict[str, dict] = {}
@@ -1417,8 +1490,13 @@ def cmd_snapshot(args) -> int:
             "updated_ts": (row.get("updated_at_ms") or 0) / 1000.0, "turns": 0, "turns_since_probe": 0, "due": False,
             "probe_running": False, "halted": False, "requested": False, "hard_evidence": 0, "soft_evidence": 0, "last_evidence": None,
         }
+    hidden = 0
     for st in all_sessions():
         if st.get("kind") != "main":
+            continue
+        if not account_visible(st.get("account_id"), acct["id"], show_all):
+            hidden += 1
+            threads.pop(st["sid"], None)
             continue
         upd = parse_iso(st.get("updated")) or 0
         if upd < cutoff and st["sid"] not in threads:
@@ -1443,7 +1521,9 @@ def cmd_snapshot(args) -> int:
         t["soft_evidence"] = sum(1 for e in evs if e.get("severity") == "soft")
         flagged = [e for e in evs if e.get("severity") in ("hard", "soft")]
         t["last_evidence"] = flagged[-1]["detail"] if flagged else None
-    index_rows = list(iter_jsonl(PROBES_INDEX))
+    all_rows = list(iter_jsonl(PROBES_INDEX))
+    index_rows = [r for r in all_rows if account_visible(r.get("account_id"), acct["id"], show_all)]
+    hidden += len(all_rows) - len(index_rows)
     latest: dict[str, dict] = {}
     for row in index_rows:
         if row.get("thread_id"):
@@ -1488,14 +1568,21 @@ def cmd_snapshot(args) -> int:
             "overall": {"status": status, "downgraded": downgraded, "suspicious": suspicious, "running": running, "message": message},
             "default_model": default_model, "default_effort": default_effort,
             "global_probe": global_probe, "global_running": bool(fr), "global_alert": global_alert,
+            "account": {"label": acct["label"], "plan": acct["plan"]}, "hidden_other_accounts": hidden,
             "threads": out_threads, "recent_probes": [probe_summary(r) for r in index_rows[-10:]][::-1]}
     print(json.dumps(snap, ensure_ascii=False, indent=2 if getattr(args, "pretty", False) else None))
     return 0
 
 
 def cmd_report(args) -> int:
-    rows = list(iter_jsonl(PROBES_INDEX))
-    print(f"does-gpt-cheat report  ·  ledger {DGC_HOME}")
+    cfg = load_config()
+    acct = current_account()
+    show_all = bool(getattr(args, "all_accounts", False) or cfg.get("show_other_accounts"))
+    all_rows = list(iter_jsonl(PROBES_INDEX))
+    rows = [r for r in all_rows if account_visible(r.get("account_id"), acct["id"], show_all)]
+    print(f"does-gpt-cheat report  ·  ledger {DGC_HOME}  ·  account {acct['label']}" + (f" ({acct['plan']})" if acct.get("plan") else ""))
+    if len(rows) != len(all_rows):
+        print(f"({len(all_rows) - len(rows)} records from other accounts hidden; use --all-accounts to include them)")
     print()
     if rows:
         print(f"{'finished':20} {'probe':11} {'thread':14} {'mode':5} {'expected':16} {'fingerprint':16} {'p':>5} {'n':>3} {'time':>5}  verdict")
@@ -2053,7 +2140,7 @@ def build_parser() -> argparse.ArgumentParser:
     a.set_defaults(fn=cmd_probe_submit_numbers)
     a = ps.add_parser("list")
     a.add_argument("--last", type=int, default=20)
-    a.set_defaults(fn=lambda args: cmd_report(argparse.Namespace(last=args.last)))
+    a.set_defaults(fn=lambda args: cmd_report(argparse.Namespace(last=args.last, all_accounts=False)))
 
     s = sub.add_parser("worker", help="(background) run one fork probe for a thread, or --fresh for a global probe")
     s.add_argument("--thread")
@@ -2067,6 +2154,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_resume)
     s = sub.add_parser("report", help="table of all probes + passive findings")
     s.add_argument("--last", type=int, default=30)
+    s.add_argument("--all-accounts", action="store_true", help="include records made under other Codex accounts")
     s.set_defaults(fn=cmd_report)
     s = sub.add_parser("explain", help="show one probe in detail, or --method")
     s.add_argument("probe_id", nargs="?")
@@ -2090,6 +2178,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
     s.add_argument("--pretty", action="store_true")
     s.add_argument("--demo", action="store_true", help="synthetic English sample data (for screenshots)")
+    s.add_argument("--all-accounts", action="store_true")
     s.add_argument("--hours", type=float, default=48)
     s.set_defaults(fn=cmd_snapshot)
     s = sub.add_parser("config", help="show / get / set / init")
