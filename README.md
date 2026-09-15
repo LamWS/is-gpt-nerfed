@@ -1,20 +1,20 @@
-<img src="macos/icon.png" width="128" align="right" alt="">
+<p align="center"><img src="docs/social-preview.png" width="880" alt="is-gpt-nerfed: shrinkflation detector for Codex"></p>
 
-# is-gpt-nerfed
-
-*Shrinkflation detector for Codex.*
+<img src="docs/nerfed-sticker.png" width="150" align="right" alt="">
 
 You pick a model in Codex. This tells you whether that model is actually the one answering, and says so when it isn't:
 
 > 🎉 Congrats! You've been nerfed! You asked for gpt-6-astra; the fingerprint says gpt-5.6-luna (91%). Enjoy the discount you didn't ask for.
+
+<br clear="right">
 
 <p align="center">
   <img src="docs/panel.png" width="456" alt="Menu bar panel: status, fresh-session probe, active threads with verdicts">
   <img src="docs/panel-settings.png" width="456" alt="Menu bar panel with settings">
 </p>
 <p align="center">
-  <img src="docs/panel-icon-normal.png" width="56" alt=""> <img src="docs/panel-icon-warn.png" width="56" alt=""> <img src="docs/panel-icon-alert.png" width="56" alt="">
-  <br><sub>Menu bar: all clear · suspicious · downgraded</sub>
+  <img src="docs/face-ok.png" width="72" alt="all clear"> <img src="docs/face-warn.png" width="72" alt="suspicious"> <img src="docs/face-alert.png" width="72" alt="nerfed">
+  <br><sub>All clear · Suspicious · Nerfed</sub>
 </p>
 
 ## What it checks

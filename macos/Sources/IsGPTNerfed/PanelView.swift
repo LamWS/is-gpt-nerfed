@@ -58,6 +58,31 @@ private func petFace(alert: Bool, warn: Bool, running: Bool) -> String {
     return "(•ᴗ•)"
 }
 
+/// The chip face that matches the app icon (bundled as face-ok / face-warn / face-alert.png); text fallback.
+struct FaceView: View {
+    let alert: Bool
+    let warn: Bool
+    let running: Bool
+    var size: CGFloat = 44
+
+    private var image: NSImage? {
+        let name = alert ? "face-alert" : (warn ? "face-warn" : "face-ok")
+        guard let res = Bundle.main.resourcePath else { return nil }
+        return NSImage(contentsOfFile: res + "/\(name).png")
+    }
+
+    var body: some View {
+        if let img = image {
+            Image(nsImage: img).resizable().interpolation(.high).frame(width: size, height: size)
+        } else {
+            Text(petFace(alert: alert, warn: warn, running: running))
+                .font(.system(size: 17, weight: .semibold, design: .rounded))
+                .frame(width: size + 8, height: size - 8)
+                .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        }
+    }
+}
+
 /// "Match · gpt-6-astra 100% · 10h ago" as one line, verdict word coloured; dimmed when it cannot vouch for
 /// the signed-in account.
 struct VerdictLine: View {
@@ -115,24 +140,19 @@ struct PanelView: View {
 
     // MARK: header
 
+    // Two lines next to the face: the verdict of the moment, then account and plumbing in one quiet line.
     private var header: some View {
         HStack(spacing: 12) {
-            Text(petFace(alert: store.isAlert, warn: store.isWarn, running: store.isRunning))
-                .font(.system(size: 17, weight: .semibold, design: .rounded))
-                .frame(width: 52, height: 36)
-                .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text("is-gpt-nerfed").font(Type.title)
-                    if store.snapshot?.demo == true { Text("sample data").font(Type.text).foregroundStyle(.tertiary) }
-                }
+            FaceView(alert: store.isAlert, warn: store.isWarn, running: store.isRunning)
+            VStack(alignment: .leading, spacing: 3) {
                 Text(statusWord)
-                    .font(store.isAlert || store.isWarn ? Type.strong : Type.text)
-                    .foregroundStyle(store.isAlert ? .red : (store.isWarn ? .orange : .secondary))
+                    .font(Type.title)
+                    .foregroundStyle(store.isAlert ? .red : (store.isWarn ? .orange : .primary))
                     .lineLimit(1)
-                Text(statusRest).font(Type.text).foregroundStyle(.tertiary).lineLimit(1)
-                if let (text, attention) = hooksLine {
-                    Text(text).font(attention ? Type.strong : Type.text).foregroundStyle(attention ? Color.orange : Color.secondary.opacity(0.8)).lineLimit(1)
+                if let (text, attention) = hooksLine, attention {
+                    Text(text).font(Type.strong).foregroundStyle(.orange).lineLimit(1)
+                } else {
+                    Text(statusRest).font(Type.text).foregroundStyle(.tertiary).lineLimit(1)
                 }
             }
             Spacer()
@@ -146,20 +166,23 @@ struct PanelView: View {
         return m.prefix(1).uppercased() + m.dropFirst()
     }
 
+    /// "w…@example.com · hooks alive 12s ago · account switched 45m ago"
     private var statusRest: String {
         guard let s = store.snapshot, store.lastError == nil else { return "" }
         var parts: [String] = []
-        if let acct = s.account?.label, !acct.isEmpty {
-            parts.append(acct + (s.account?.plan.map { " (\($0))" } ?? ""))
-        }
-        if let ago = s.account?.switchedAgo, !ago.isEmpty { parts.append("account switched \(ago)") }
+        if let acct = s.account?.label, !acct.isEmpty { parts.append(acct) }
+        if let (text, _) = hooksLine { parts.append(text) }
+        if let ago = s.account?.switchedAgo, !ago.isEmpty { parts.append("switched \(ago)") }
         return parts.joined(separator: " · ")
     }
 
-    /// Hook plumbing state. Attention (orange) whenever Codex will not run the hooks yet.
+    /// Hook plumbing state; attention = true whenever Codex will not run the hooks yet.
     private var hooksLine: (String, Bool)? {
         guard let s = store.snapshot, store.lastError == nil else { return nil }
-        guard let h = s.hooks else { return (hooksAliveText(s), false) }
+        guard let h = s.hooks else {
+            if let ago = s.hooksLastEventAgo, !ago.isEmpty { return ("hooks alive \(ago)", false) }
+            return ("no hook events yet", false)
+        }
         switch h.state {
         case "untrusted":
             return ("Hooks not trusted by Codex · run nerfed hooks trust", true)
@@ -167,18 +190,13 @@ struct PanelView: View {
             return ("Codex does not list the plugin's hooks · run install.sh", true)
         default:
             if h.desktopLoaded != true {
-                return ("Codex app has not loaded the plugin yet · quit and reopen Codex", true)
+                return ("Codex has not loaded the plugin yet · quit and reopen Codex", true)
             }
             if h.desktopLoadedCurrent != true, let stale = h.staleSinceInstallS, stale > 240 {
-                return ("Codex app still runs the previous version · quit and reopen Codex", true)
+                return ("Codex still runs the previous version · quit and reopen Codex", true)
             }
-            return ("Hooks alive in Codex · last \(h.lastDesktopEventAgo ?? "just now")", false)
+            return ("hooks alive \(h.lastDesktopEventAgo ?? "just now")", false)
         }
-    }
-
-    private func hooksAliveText(_ s: Snapshot) -> String {
-        if let ago = s.hooksLastEventAgo, !ago.isEmpty { return "Hooks alive \(ago)" }
-        return "No hook events yet"
     }
 
     // MARK: first-run setup (only while something is missing)
@@ -284,7 +302,9 @@ struct PanelView: View {
                 openWindow(id: "report")
             }
             Spacer()
-            if let v = store.snapshot?.version { Text("v\(v)").font(Type.text).foregroundStyle(.tertiary) }
+            if let v = store.snapshot?.version {
+                Text("v\(v)" + (store.snapshot?.demo == true ? " · sample data" : "")).font(Type.text).foregroundStyle(.tertiary)
+            }
             TextButton(title: "Quit") { NSApplication.shared.terminate(nil) }
         }
         .padding(.horizontal, 2)
