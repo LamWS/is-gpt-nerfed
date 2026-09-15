@@ -16,8 +16,10 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/IsGPTNerfed"
 cp "$HERE/Info.plist" "$APP/Contents/Info.plist"
-# icon
-python3 "$HERE/make_icon.py" >/dev/null
+# icon: macos/icon.svg (alternatives in macos/icons/) rasterised with Quick Look, which every Mac has
+rm -f "$HERE/build/icon.svg.png" "$HERE/build/icon_1024.png"
+qlmanage -t -s 1024 -o "$HERE/build" "$HERE/icon.svg" >/dev/null 2>&1
+mv "$HERE/build/icon.svg.png" "$HERE/build/icon_1024.png"
 ICONSET="$HERE/build/AppIcon.iconset"
 rm -rf "$ICONSET"; mkdir -p "$ICONSET"
 for s in 16 32 128 256 512; do

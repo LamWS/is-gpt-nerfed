@@ -1,3 +1,5 @@
+<img src="macos/icon.svg" width="96" align="right" alt="">
+
 # is-gpt-nerfed
 
 *Shrinkflation detector for Codex.*
@@ -145,6 +147,9 @@ Uninstall: `./uninstall.sh` (add `--purge` to delete the local ledger).
 ./macos/build.sh --run        # run from the build folder instead
 ./macos/build.sh --zip        # dist/IsGPTNerfed-<version>.zip (+ .sha256) for a release
 ```
+
+The app icon is `macos/icon.svg` (a lens over a downgrade); `macos/icons/` holds the alternatives (`bars.svg`,
+`inspector.svg`); copy one over `icon.svg` and rebuild to switch.
 
 Prebuilt zips on the Releases page are ad-hoc signed, not notarized: the first launch needs right-click → Open, or
 `xattr -dr com.apple.quarantine ~/Applications/IsGPTNerfed.app`. The app needs the plugin installed (it runs `nerfed`
