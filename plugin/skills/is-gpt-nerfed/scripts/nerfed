@@ -1452,7 +1452,7 @@ def demo_snapshot(cfg: dict) -> dict:
             "hooks_last_event": iso(t0 - 12), "hooks_last_event_ago": "12s ago",
             "account": {"label": "y…@example.com", "plan": "plus"},
             "overall": {"status": "alert", "downgraded": 1, "suspicious": 1, "unverified": 1, "running": 0,
-                        "message": "1 thread downgraded · 1 suspicious · 1 unverified since the account switch"},
+                        "message": "1 thread downgraded · 1 suspicious · 1 unverified"},
             "default_model": "gpt-6-astra", "default_effort": "high", "global_probe": fresh, "global_running": False, "global_alert": False,
             "threads": threads, "recent_probes": recent, "demo": True}
 
@@ -1571,7 +1571,7 @@ def cmd_snapshot(args) -> int:
     if suspicious:
         parts.append(f"{suspicious} suspicious")
     if unverified:
-        parts.append(f"{unverified} unverified since the account switch")
+        parts.append(f"{unverified} unverified")
     if running:
         parts.append(f"{running} probe{'s' if running > 1 else ''} running")
     message = " · ".join(parts) if parts else ("all clear" if (out_threads or global_probe) else "no active threads")

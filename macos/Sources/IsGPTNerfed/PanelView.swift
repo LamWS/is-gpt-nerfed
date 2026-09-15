@@ -66,7 +66,8 @@ struct VerdictLine: View {
             Text(probe.detail).foregroundStyle(stale ? .tertiary : .secondary).lineLimit(1)
             if stale {
                 Text("·").foregroundStyle(.tertiary)
-                Text("another account, unverified").foregroundStyle(.tertiary)
+                Text("another account").foregroundStyle(.tertiary).fixedSize()
+                    .help("Probed while a different Codex account was signed in; it does not vouch for this account. Re-probed when the thread is next active.")
             }
             if let ago = probe.finishedAgo, !ago.isEmpty {
                 Text("·").foregroundStyle(.tertiary)

@@ -374,7 +374,7 @@ class ForkProbeTests(unittest.TestCase):
         self.assertTrue(t["unverified"])
         self.assertTrue(t["last_probe"]["stale_account"])
         self.assertTrue(t["due"], "must be re-probed under the new account")
-        self.assertIn("unverified since the account switch", snap["overall"]["message"])
+        self.assertIn("1 unverified", snap["overall"]["message"])
         self.assertEqual(snap["overall"]["status"], "unverified")
         with mock.patch.object(dgc, "link_session", side_effect=lambda st: st.update(kind="main")), \
                 mock.patch.object(dgc, "spawn_worker", return_value=True) as spawn:
