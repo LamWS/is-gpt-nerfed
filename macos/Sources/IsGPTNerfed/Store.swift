@@ -30,6 +30,7 @@ final class Store {
 
     var isAlert: Bool { (snapshot?.overall.downgraded ?? 0) > 0 }
     var isWarn: Bool { !isAlert && (snapshot?.overall.suspicious ?? 0) > 0 }
+    var isUpgraded: Bool { !isAlert && !isWarn && (snapshot?.overall.upgraded ?? 0) > 0 }
     var isRunning: Bool { (snapshot?.overall.running ?? 0) > 0 }
     /// `NERFED_DEMO=1` renders synthetic English sample data (used for README screenshots).
     let demo = ProcessInfo.processInfo.environment["NERFED_DEMO"] == "1"

@@ -6,6 +6,7 @@ import SwiftUI
 extension ProbeSummary {
     var tint: Color {
         if isDowngrade == true { return .red }
+        if isUpgrade == true { return .green }
         switch verdict {
         case "MATCH": return .green
         case "MISMATCH", "SUSPICIOUS": return .orange
@@ -160,7 +161,7 @@ struct PanelView: View {
                 .padding(.bottom, 5)
             Text(parts.first ?? "")
                 .font(Type.headline)
-                .foregroundStyle(store.isAlert ? .red : (store.isWarn ? .orange : .primary))
+                .foregroundStyle(store.isAlert ? .red : (store.isWarn ? .orange : (store.isUpgraded ? .green : .primary)))
                 .lineLimit(2)
                 .multilineTextAlignment(.center)
             if parts.count > 1 {
@@ -439,7 +440,7 @@ struct ReportLines: View {
             ForEach(evidence) { e in
                 let on = e.active ?? true
                 Text(e.text + (e.ago.map { " · \($0)" } ?? "") + (on ? "" : " · reverted"))
-                    .foregroundStyle(on ? (e.severity == "hard" ? Color.red : Color.orange) : Color.secondary)
+                    .foregroundStyle(on ? (e.severity == "hard" ? Color.red : (e.severity == "soft" ? Color.orange : Color.green)) : Color.secondary)
                     .lineLimit(2)
             }
             if let reportText {
@@ -496,6 +497,7 @@ struct ThreadRow: View {
     private var dot: Color {
         if thread.alert { return .red }
         if thread.suspicious == true { return .orange }
+        if thread.upgraded == true { return .green }
         if thread.unverified == true { return .secondary.opacity(0.35) }
         if let p = thread.lastProbe, p.verdict == "MATCH" { return .green }
         return .secondary.opacity(0.35)
@@ -523,12 +525,13 @@ struct ThreadRow: View {
                                 } else {
                                     Text(thread.due ? "No probe yet · due" : "No probe yet").font(Type.text).foregroundStyle(.tertiary)
                                 }
-                                if thread.hardEvidence > 0, let ev = thread.lastEvidence {
-                                    EvidenceLine(text: ev, ago: thread.lastEvidenceAgo, color: .red)
-                                        .help("Found in the thread's own records, independent of any probe, and still in effect. Click the row for the history.")
-                                } else if thread.softEvidence > 0, let ev = thread.lastEvidence {
-                                    EvidenceLine(text: ev, ago: thread.lastEvidenceAgo, color: .orange)
-                                        .help("Applied through thread settings and still in effect: either you changed it, or Codex did (it lowers effort automatically at usage limits). Click the row for the history.")
+                                if let ev = thread.lastEvidence, let sev = thread.lastEvidenceSeverity {
+                                    EvidenceLine(text: ev, ago: thread.lastEvidenceAgo, color: sev == "hard" ? .red : (sev == "soft" ? .orange : .green))
+                                        .help(sev == "good"
+                                              ? "Codex's own records show a switch to a better model (a rollout). Good news, still in effect. Click the row for the history."
+                                              : sev == "hard"
+                                              ? "Found in the thread's own records, independent of any probe, and still in effect. Click the row for the history."
+                                              : "Applied through thread settings and still in effect: either you changed it, or Codex did (it lowers effort automatically at usage limits). Click the row for the history.")
                                 }
                             }
                         } report: {

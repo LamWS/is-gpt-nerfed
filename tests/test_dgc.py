@@ -88,14 +88,14 @@ class ScannerTests(unittest.TestCase):
         self.assertEqual(sev, {"silent_model_change": "hard", "silent_effort_change": "hard", "hidden_model": "hard", "context_window_change": "hard"})
         self.assertEqual(scan["models_seen"], {"gpt-6-astra": 1, "gpt-reserve": 1})
 
-    def test_settings_applied_change_is_soft_or_info(self):
+    def test_settings_applied_change_is_soft_or_good(self):
         p = self.write(rollout_lines(settings("gpt-6-astra", "max", "priority"), turn(1, "gpt-6-astra", "max"),
                                      settings("gpt-5.5", "high", "default"), turn(2, "gpt-5.5", "high"),
                                      settings("gpt-6-astra", "max", "default"), turn(3, "gpt-6-astra", "max")))
         _, ev = dgc.scan_full(p, frozenset())
         kinds = {(e["kind"], e["severity"]) for e in ev}
-        self.assertIn(("applied_model_change", "soft"), kinds)
-        self.assertIn(("applied_model_change", "info"), kinds)
+        self.assertIn(("applied_model_change", "soft"), kinds, "gpt-6-astra → gpt-5.5 through settings: a downgrade, was that you?")
+        self.assertIn(("applied_model_change", "good"), kinds, "back to gpt-6-astra: a newer generation, good news")
         self.assertIn(("service_tier_change", "info"), kinds)
         self.assertFalse(any(k == "silent_model_change" for k, _ in kinds))
 
@@ -138,12 +138,45 @@ class ScannerTests(unittest.TestCase):
         self.assertEqual([(e["kind"], e["severity"]) for e in ev], [("silent_model_change", "hard")])
         self.assertEqual(dgc.scan_rollout(p, scan, frozenset()), [])
 
+    def test_silent_upgrade_is_good_news(self):
+        p = self.write(rollout_lines(turn(1, "gpt-5.6-sol", "high"), turn(2, "gpt-6-sol", "high")))
+        _, ev = dgc.scan_full(p, frozenset())
+        self.assertEqual([(e["kind"], e["severity"]) for e in ev], [("silent_model_change", "good")])
+        self.assertEqual(dgc.compact_evidence(ev[0]), "Upgraded: gpt-5.6-sol → gpt-6-sol")
+        self.assertIn("newer generation", ev[0].get("why", ""))
+        self.assertEqual(len(dgc.active_evidence(ev)), 1, "good news stays active like any other finding")
+
 
 class LogicTests(unittest.TestCase):
+    def test_compare_models_orders_by_catalog_generation_size_then_ranking(self):
+        levels_all = ["low", "medium", "high", "xhigh", "max", "ultra"]
+        cat = {"gpt-6-astra": {"priority": 1, "visibility": "list", "supported_reasoning_levels": levels_all, "context_window": 272000},
+               "gpt-5.6-sol": {"priority": 4, "visibility": "list", "supported_reasoning_levels": levels_all, "context_window": 272000, "upgrade": "gpt-6-sol"},
+               "gpt-5.6-luna": {"priority": 8, "visibility": "list", "supported_reasoning_levels": levels_all[:-1], "context_window": 272000},
+               "gpt-reserve": {"priority": 3, "visibility": "hide", "supported_reasoning_levels": levels_all[:3], "context_window": 272000}}
+        c = lambda a, b: dgc.compare_models(a, b, cat)
+        r = c("gpt-5.6-sol", "gpt-6-sol")
+        self.assertEqual((r["direction"], r["confidence"]), ("upgrade", "high"))
+        self.assertIn("successor", r["reason"])
+        self.assertEqual(c("gpt-6-astra", "gpt-5.6-luna")["direction"], "downgrade")
+        r = c("gpt-5.3-codex", "gpt-5.3-codex-spark")
+        self.assertEqual((r["direction"], r["confidence"], r["reason"]), ("downgrade", "high", "smaller size tier"))
+        self.assertEqual(c("gpt-6-astra", "gpt-reserve")["direction"], "downgrade")
+        r = c("gpt-5.6-sol", "gpt-5.6-luna")
+        self.assertEqual((r["direction"], r["confidence"]), ("downgrade", "medium"), "same generation and size: Codex's own ranking decides")
+        self.assertEqual(c("gpt-5.6-luna", "gpt-5.6-sol")["direction"], "upgrade")
+        self.assertEqual(c("gpt-6-astra", "gpt-6-astra")["direction"], "lateral")
+        r = c("gpt-6-alpha", "gpt-6-beta")
+        self.assertEqual((r["direction"], r["confidence"]), ("lateral", "low"), "unknown peers are not called either way")
+        self.assertEqual(c("claude-opus-4-7", "claude-opus-4-8")["direction"], "upgrade")
+        self.assertEqual(c("gpt-5.6-sol", "gpt-6-sol-spark")["confidence"], "medium", "newer but smaller: only a medium call")
+        self.assertEqual(dgc.model_version("claude-haiku-4-5-20251001"), (4, 5))
+        self.assertIsNone(dgc.model_version("codex-auto-review"))
+
     def test_ranking_and_frequency(self):
         self.assertGreater(dgc.model_rank("gpt-6-astra"), dgc.model_rank("gpt-5.6-sol"))
         self.assertEqual(dgc.classify_change("gpt-6-astra", "gpt-reserve"), "downgrade")
-        self.assertEqual(dgc.classify_change("gpt-5.6-sol", "gpt-5.6-luna"), "lateral")
+        self.assertEqual(dgc.classify_change("gpt-5.6-sol", "gpt-5.6-luna", {}), "lateral", "without a catalog the two are peers")
         self.assertEqual(dgc.parse_frequency("every 5 turns"), ("turns", 5))
         self.assertEqual(dgc.parse_frequency("2h"), ("minutes", 120))
         with self.assertRaises(ValueError):
@@ -608,6 +641,14 @@ class SnapshotReportTests(unittest.TestCase):
         self.assertEqual(after, before, "the SessionStart hook must not crash")
         events = [e for e in dgc.iter_jsonl(os.path.join(dgc.NERFED_HOME, "log.jsonl")) if e.get("kind") == "session_start"]
         self.assertTrue(events and events[-1].get("sid") == "start-thread-1" and events[-1].get("session_kind") == "main")
+
+    def test_upgrade_shows_as_good_news(self):
+        snap = json.loads(run_cli(["snapshot", "--json", "--demo"])[1])
+        t = next(t for t in snap["threads"] if t["id"] == "docs")
+        self.assertTrue(t["upgraded"])
+        self.assertEqual(t["last_evidence_severity"], "good")
+        self.assertEqual(snap["overall"]["upgraded"], 1)
+        self.assertIn("1 upgraded", snap["overall"]["message"])
 
     def test_failed_attempt_is_not_a_verdict(self):
         snap = json.loads(run_cli(["snapshot", "--json", "--demo"])[1])

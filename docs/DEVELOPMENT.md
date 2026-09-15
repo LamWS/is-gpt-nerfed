@@ -52,6 +52,13 @@ NERFED_DEMO=1 ~/Applications/IsGPTNerfed.app/Contents/MacOS/IsGPTNerfed --render
 
 ## Passive scanner
 
+Better or worse (`compare_models`) is not a fixed list of names. In order of trust: the catalog's own successor
+pointer (`upgrade` in `models_cache.json`), hidden internal models (`visibility: hide`), the generation in the slug
+(gpt-5.6 → gpt-6, claude-opus-4-7 → 4-8), the size tier in the slug (nano, mini/spark/lite/small/flash, plain,
+pro/ultra), then the catalog's ranking (`priority`), the highest supported reasoning effort and the context window.
+Each call carries a confidence; only high or medium upgrades become "good" findings (green, notified), the rest stay
+soft. Downgrades are hard when silent, soft when applied through settings.
+
 Reads the thread's rollout JSONL incrementally on every Stop hook. Findings and severities:
 
 | finding | severity | trigger |

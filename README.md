@@ -26,7 +26,8 @@ Two signals. Everything runs on your Mac; nothing is uploaded.
 
 **Every turn, zero tokens.** Codex records, per turn, which model and reasoning effort it asked for. The plugin
 reads that and flags anything that changed without you changing it: a model swap, a reasoning-effort drop, a hidden
-internal model (such as `gpt-reserve`), a context window that shrank.
+internal model (such as `gpt-reserve`), a context window that shrank. A move to a newer or larger model (a rollout)
+is reported too, as good news.
 
 **On a schedule, three forks.** The thread is forked ephemerally three times at its last finished turn, the same
 mechanism as `/side`, invisible in Codex. Each fork is asked for about 300 "random" numbers. Models are bad at
@@ -40,6 +41,7 @@ the model you selected:
 | Suspicious | the fingerprint leans elsewhere, not confidently; it stands until the next probe |
 | Downgrade / Upgrade / Rerouted | confident mismatch: top candidate ≥ 80 %, your model ≤ 20 % |
 | Downgraded | Codex's own records show a silent switch; no fingerprint needed |
+| Upgraded | Codex's own records show a move to a newer or larger model (a rollout); good news, in green |
 | Unlisted | your model is not in the fingerprint bank yet |
 | Invalid | no usable answer (tool use, refusal, network); not a verdict: the row keeps its last one and offers Retry |
 

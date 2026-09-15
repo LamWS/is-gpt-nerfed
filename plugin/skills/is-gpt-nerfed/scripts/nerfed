@@ -269,7 +269,10 @@ def load_catalog() -> dict:
     for m in models or []:
         if isinstance(m, dict) and m.get("slug"):
             out[m["slug"]] = {"display_name": m.get("display_name"), "visibility": m.get("visibility"),
-                              "context_window": m.get("context_window"), "priority": m.get("priority")}
+                              "context_window": m.get("context_window"), "priority": m.get("priority"),
+                              "upgrade": m.get("upgrade"),  # the catalog's own successor pointer, when a model is being replaced
+                              "supported_reasoning_levels": [(lvl.get("effort") if isinstance(lvl, dict) else lvl)
+                                                             for lvl in (m.get("supported_reasoning_levels") or [])]}
     return out
 
 
@@ -278,24 +281,86 @@ def hidden_models(cat: dict | None = None) -> frozenset:
     return frozenset(s.lower() for s, m in cat.items() if (m.get("visibility") or "").lower() == "hide")
 
 
-def model_rank(slug: str | None) -> tuple:
-    s = (slug or "").lower()
-    m = re.search(r"gpt-?(\d+)(?:\.(\d+))?", s)
-    ver = float(f"{m.group(1)}.{m.group(2) or '0'}") if m else 0.0
-    size = 3
+def model_version(slug: str) -> tuple[int, int] | None:
+    """The generation in a slug: gpt-6-astra → (6, 0), gpt-5.6-sol → (5, 6), claude-opus-4-8 → (4, 8); None if there is none."""
+    m = re.search(r"(?:^|-)(\d+)(?:[.\-](\d{1,2}))?(?=$|-)", slug)
+    return (int(m.group(1)), int(m.group(2) or 0)) if m else None
+
+
+def model_size(slug: str) -> int:
+    """Size tier from the slug's own words: 0 nano, 1 mini/spark/lite/small/flash/reserve/auto-review, 2 the plain model, 3 pro/ultra."""
+    size = 2
     for tag, val in SIZE_TAGS:
-        if tag in s:
+        if tag in slug:
             size = min(size, val)
-    return (ver, size)
+    if re.search(r"(^|-)(pro|ultra)($|-)", slug):
+        size = 3
+    return size
 
 
-def classify_change(old: str | None, new: str | None) -> str:
-    ro, rn = model_rank(old), model_rank(new)
-    if rn < ro:
-        return "downgrade"
-    if rn > ro:
-        return "upgrade"
-    return "lateral"
+def model_rank(slug: str | None) -> tuple:
+    """(generation, size tier) of a slug, catalog-free. Kept for the simple orderings; compare_models is the real thing."""
+    s = normalize_model(slug)
+    v = model_version(s) or (0, 0)
+    return (v[0] + v[1] / 100.0, model_size(s))
+
+
+def model_profile(slug: str | None, cat: dict) -> dict:
+    s = normalize_model(slug)
+    entry = cat.get(s) or {}
+    levels = [effort_idx(x) for x in entry.get("supported_reasoning_levels") or []]
+    levels = [x for x in levels if x is not None]
+    return {"slug": s, "version": model_version(s), "size": model_size(s), "hidden": (entry.get("visibility") or "").lower() == "hide",
+            "priority": entry.get("priority"), "max_effort": max(levels) if levels else None, "ctx": entry.get("context_window"),
+            "upgrade": normalize_model(entry.get("upgrade")) if entry.get("upgrade") else None}
+
+
+def compare_models(old: str | None, new: str | None, cat: dict | None = None) -> dict:
+    """Is `new` a better or a worse model than `old`? Not a fixed list: the signals, in order of trust, are
+    Codex's own catalog succession (`upgrade`), hidden internal models, the generation in the slug, the size tier in
+    the slug, then the catalog's ranking (priority), the highest reasoning effort a model supports, and the context
+    window. Returns {direction: upgrade|downgrade|lateral, confidence: high|medium|low, reason}."""
+    cat = load_catalog() if cat is None else cat
+    a, b = model_profile(old, cat), model_profile(new, cat)
+
+    def out(direction: str, confidence: str, reason: str) -> dict:
+        return {"direction": direction, "confidence": confidence, "reason": reason}
+
+    if a["slug"] == b["slug"]:
+        return out("lateral", "high", "same model")
+    if a["upgrade"] and a["upgrade"] == b["slug"]:
+        return out("upgrade", "high", f"Codex's catalog names {b['slug']} as the successor of {a['slug']}")
+    if b["upgrade"] and b["upgrade"] == a["slug"]:
+        return out("downgrade", "high", f"Codex's catalog names {a['slug']} as the successor of {b['slug']}")
+    if b["hidden"] and not a["hidden"]:
+        return out("downgrade", "high", f"{b['slug']} is an internal model Codex does not list")
+    if a["hidden"] and not b["hidden"]:
+        return out("upgrade", "medium", f"back from the internal model {a['slug']}")
+    if a["version"] and b["version"] and a["version"] != b["version"]:
+        newer = b["version"] > a["version"]
+        fmt = lambda v: f"{v[0]}.{v[1]}" if v[1] else str(v[0])
+        if a["size"] == b["size"]:
+            return out("upgrade" if newer else "downgrade", "high",
+                       f"{'newer' if newer else 'older'} generation ({fmt(b['version'])} vs {fmt(a['version'])})")
+        return out("upgrade" if newer else "downgrade", "medium",
+                   f"{'newer' if newer else 'older'} generation ({fmt(b['version'])} vs {fmt(a['version'])}) but a different size tier")
+    if a["size"] != b["size"]:
+        larger = b["size"] > a["size"]
+        return out("upgrade" if larger else "downgrade", "high", f"{'larger' if larger else 'smaller'} size tier")
+    if a["priority"] is not None and b["priority"] is not None and a["priority"] != b["priority"]:
+        above = b["priority"] < a["priority"]
+        return out("upgrade" if above else "downgrade", "medium", f"Codex lists {b['slug']} {'above' if above else 'below'} {a['slug']}")
+    if a["max_effort"] is not None and b["max_effort"] is not None and a["max_effort"] != b["max_effort"]:
+        higher = b["max_effort"] > a["max_effort"]
+        return out("upgrade" if higher else "downgrade", "low", f"supports a {'higher' if higher else 'lower'} top reasoning effort")
+    if a["ctx"] and b["ctx"] and a["ctx"] != b["ctx"]:
+        larger = b["ctx"] > a["ctx"]
+        return out("upgrade" if larger else "downgrade", "low", f"{'larger' if larger else 'smaller'} context window")
+    return out("lateral", "low", "same generation and size; the catalog does not rank them")
+
+
+def classify_change(old: str | None, new: str | None, cat: dict | None = None) -> str:
+    return compare_models(old, new, cat)["direction"]
 
 
 def effort_idx(e) -> int | None:
@@ -477,7 +542,7 @@ def scan_rollout(path: str, scan: dict, hidden=frozenset(), cap_bytes: int = 64 
     """
     new_ev: list[dict] = []
 
-    def add(kind: str, severity: str, detail: str, ts=None, turn=None):
+    def add(kind: str, severity: str, detail: str, ts=None, turn=None, **extra):
         key = f"{kind}|{detail}|{ts}"
         keys = scan.setdefault("ev_keys", [])
         if key in keys:
@@ -485,7 +550,7 @@ def scan_rollout(path: str, scan: dict, hidden=frozenset(), cap_bytes: int = 64 
         keys.append(key)
         usage = scan.get("usage_percent")
         new_ev.append({"ts": ts or iso(), "kind": kind, "severity": severity, "detail": detail, "turn_id": turn,
-                       "usage_percent": usage})
+                       "usage_percent": usage, **extra})
 
     try:
         size = os.path.getsize(path)
@@ -531,13 +596,15 @@ def scan_rollout(path: str, scan: dict, hidden=frozenset(), cap_bytes: int = 64 
                 if scan["model"] is None:
                     scan["model"] = scan["first_model"] = model
                 elif model != scan["model"]:
-                    change = classify_change(scan["model"], model)
+                    cmp = compare_models(scan["model"], model)
+                    change = cmp["direction"]
+                    good = change == "upgrade" and cmp["confidence"] in ("high", "medium")  # a rollout to a better model: good news
                     if applied.get("model") == model:
-                        add("applied_model_change", "soft" if change == "downgrade" else "info",
-                            f"thread settings switched model {scan['model']} → {model} ({change})", ts, turn)
+                        add("applied_model_change", "soft" if change == "downgrade" else ("good" if good else "info"),
+                            f"thread settings switched model {scan['model']} → {model} ({change})", ts, turn, why=cmp["reason"])
                     else:
-                        add("silent_model_change", "hard" if change == "downgrade" else "soft",
-                            f"model {scan['model']} → {model} with no settings change ({change})", ts, turn)
+                        add("silent_model_change", "hard" if change == "downgrade" else ("good" if good else "soft"),
+                            f"model {scan['model']} → {model} with no settings change ({change})", ts, turn, why=cmp["reason"])
                     scan["model"] = model
             if effort:
                 scan["efforts_seen"][effort] = scan["efforts_seen"].get(effort, 0) + 1
@@ -772,6 +839,9 @@ LINES = {
     ],
     "DOWNGRADED_HARD": [
         "🎉 Congrats! You've been nerfed! Codex's own records say so: {detail}. No notice, no refund, no shame.",
+    ],
+    "UPGRADED": [
+        "🎉 Congrats, and this time we mean it: you've been upgraded. Codex's own records say so: {detail}. Enjoy it while it lasts.",
     ],
     "MATCH": [
         "All clear: the fingerprint says {top} ({p:.0%}), which is what you asked for. The model you're paying for actually showed up. Cherish it.",
@@ -1525,6 +1595,8 @@ def cmd_hook(args) -> int:
                         play_sound(cfg)
                     elif e["severity"] == "soft":
                         messages.append(pet_line("SETTINGS_DOWNGRADE", detail=e["detail"]))
+                    elif e["severity"] == "good":
+                        messages.append(pet_line("UPGRADED", seed=e["detail"], detail=e["detail"]))
             running = st.get("probe_running")
             if running and not pid_alive(running.get("pid")):
                 st["probe_running"] = running = None
@@ -1583,7 +1655,7 @@ def active_evidence(evs: list) -> list:
     latest: dict = {}
     for e in evs or []:
         latest[EVIDENCE_DIMENSION.get(e.get("kind"), e.get("kind"))] = e
-    return [e for e in latest.values() if e.get("severity") in ("hard", "soft")]
+    return [e for e in latest.values() if e.get("severity") in ("hard", "soft", "good")]
 
 
 def at_usage_limit(e: dict) -> bool:
@@ -1601,8 +1673,10 @@ def compact_evidence(e: dict) -> str:
         return f"{int(v) // 1000}k" if v.isdigit() and int(v) >= 1000 else v
 
     if kind == "silent_model_change" and a:
-        return f"Silent model change: {a} → {b}"
+        return f"Upgraded: {a} → {b}" if e.get("severity") == "good" else f"Silent model change: {a} → {b}"
     if kind == "applied_model_change" and a:
+        if e.get("severity") == "good":
+            return f"Upgraded: {a} → {b} · via settings"
         return f"Codex switched model {a} → {b} at the usage limit ({e.get('usage_percent'):.0f}%)" if at_usage_limit(e) else f"Settings: model {a} → {b} · was that you?"
     if kind == "silent_effort_change" and a:
         return f"Silent effort change: {a} → {b}"
@@ -1712,7 +1786,7 @@ def evidence_entries(evs: list, active: list, limit: int = 8) -> list[dict]:
     """Hard and soft findings of one thread for the panel's in-place report, newest first; `active` marks the ones
     still in effect (the others were reverted by a later change and stay for the record)."""
     keys = {(a.get("kind"), a.get("ts")) for a in active}
-    rows = [e for e in evs if e.get("severity") in ("hard", "soft")][-limit:]
+    rows = [e for e in evs if e.get("severity") in ("hard", "soft", "good")][-limit:]
     return [{"text": compact_evidence(e), "ts": e.get("ts"), "ago": ago(parse_iso(e.get("ts"))), "severity": e.get("severity"),
              "active": (e.get("kind"), e.get("ts")) in keys} for e in rows][::-1]
 
@@ -1754,6 +1828,7 @@ def probe_summary(row: dict, current: str | None = None) -> dict:
         "elapsed_s": row.get("elapsed_s"), "errors": errors[:4], "quote": full.get("quote"), "started": full.get("started"),
         "results": [{"model": r.get("model"), "probability": r.get("probability")} for r in (full.get("results") or [])[:4]],
         "is_downgrade": verdict == "DOWNGRADED!" or (verdict == "MISMATCH" and row.get("direction") == "downgrade"),
+        "is_upgrade": verdict == "MISMATCH" and row.get("direction") == "upgrade",
         "is_suspicious": verdict == "SUSPICIOUS",
         "retryable": (status == "failed" or verdict == "INVALID") and (not errors or transport_like(errors)),
         "retries": row.get("retries") or full.get("retries") or 0,
@@ -1775,13 +1850,15 @@ def demo_snapshot(cfg: dict) -> dict:
                 "probability": p, "p_expected": p_exp if p_exp is not None else (None if p is None else (p if pred == expected else round(1 - p, 2))),
                 "margin": margin, "confidence": None if p is None else ("high" if p >= 0.8 else "low"), "used_outputs": n, "queries": q, "rounds": rounds,
                 "elapsed_s": 41.0, "errors": errors or [], "quote": "", "is_downgrade": verdict == "DOWNGRADED!" or (verdict == "MISMATCH" and direction == "downgrade"),
+                "is_upgrade": verdict == "MISMATCH" and direction == "upgrade",
                 "is_suspicious": verdict == "SUSPICIOUS", "retryable": status == "failed" or verdict == "INVALID", "retries": retries}
 
     def thread(tid, title, model, effort, turns, ago_s, last, hard=0, soft=0, ev=None, due=False, running=False, halted=False,
-               probes=None, evidence=None, failure=None):
+               probes=None, evidence=None, failure=None, good=0):
         stale = bool(last and last.get("stale_account"))
         return {"id": tid, "title": title, "cwd": "/Users/you/code/" + tid, "model": model, "effort": effort, "updated_ts": t0 - ago_s,
                 "probes": probes if probes is not None else ([last] if last else []), "evidence": evidence or [], "last_failure": failure,
+                "good_evidence": good, "upgraded": good > 0 and not hard, "last_evidence_severity": "hard" if hard else ("soft" if soft else ("good" if good else None)),
                 "evidence_history": len(evidence or []), "last_evidence_ago": (evidence or [{}])[0].get("ago") if ev else None,
                 "updated": iso(t0 - ago_s), "updated_ago": ago(t0 - ago_s), "active": ago_s < 15 * 60, "turns": turns,
                 "turns_since_probe": min(turns, 5), "due": due or stale, "probe_running": running, "halted": halted, "requested": False,
@@ -1809,6 +1886,10 @@ def demo_snapshot(cfg: dict) -> dict:
                probe("c3d4e5f6a7", "oauth", "MATCH", p=1.0, margin=0.0, ago_s=10800),
                failure=probe("c3d4e5f6a8", "oauth", "INVALID", status="failed", pred=None, p=None, p_exp=None, n=0,
                              errors=["codex thread/fork timed out after 45s"], retries=1, ago_s=1200)),
+        thread("docs", "Rewrite the docs site", "gpt-6-sol", "high", 5, 2400,
+               probe("f7a8b9c0d1", "docs", "MATCH", expected="gpt-6-sol", pred="gpt-6-sol", p=1.0, margin=0.0, ago_s=2100), good=1,
+               ev="Upgraded: gpt-5.6-sol → gpt-6-sol",
+               evidence=[{"text": "Upgraded: gpt-5.6-sol → gpt-6-sol", "ts": iso(t0 - 2600), "ago": ago(t0 - 2600), "severity": "good", "active": True}]),
         thread("pg17", "Migrate to Postgres 17", "gpt-5.6-sol", "high", 9, 3600, pg_probes[0], probes=pg_probes),
         thread("relnotes", "Write release notes v2.3", "gpt-6-astra", "medium", 3, 10800, None, due=True),
     ]
@@ -1826,11 +1907,11 @@ def demo_snapshot(cfg: dict) -> dict:
             "fresh_due": False,
             "account": {"label": "y…@example.com", "plan": "plus", "switched_at": iso(t0 - 2700), "switched_ago": "45m ago",
                         "previous_label": "o…@example.com"},
-            "overall": {"status": "alert", "downgraded": 1, "suspicious": 1, "unverified": 1, "running": 0,
-                        "message": "1 downgraded · 1 suspicious · 1 unverified"},
+            "overall": {"status": "alert", "downgraded": 1, "suspicious": 1, "unverified": 1, "upgraded": 1, "running": 0,
+                        "message": "1 downgraded · 1 suspicious · 1 upgraded · 1 unverified"},
             "default_model": "gpt-6-astra", "default_effort": "high", "global_probe": fresh, "global_running": False, "global_alert": False,
             "global_probes": fresh_probes, "global_report_text": report_text_for("Fresh session", "gpt-6-astra", "high", fresh_probes, []),
-            "global_failure": None, "last_verdict": pay_last,
+            "global_failure": None, "last_verdict": pay_last, "global_upgraded": False,
             "threads": threads, "recent_probes": recent, "demo": True}
 
 
@@ -1926,9 +2007,13 @@ def build_snapshot(cfg: dict, hours: float = 48.0) -> dict:
         active = sorted(active_evidence(st.get("evidence") or []), key=lambda e: e.get("ts") or "")
         t["hard_evidence"] = sum(1 for e in active if e.get("severity") == "hard")
         t["soft_evidence"] = sum(1 for e in active if e.get("severity") == "soft")
-        t["evidence_history"] = sum(1 for e in st.get("evidence") or [] if e.get("severity") in ("hard", "soft"))
-        t["last_evidence"] = compact_evidence(active[-1]) if active else None
-        t["last_evidence_ago"] = ago(parse_iso(active[-1].get("ts"))) if active else None
+        t["good_evidence"] = sum(1 for e in active if e.get("severity") == "good")
+        t["evidence_history"] = sum(1 for e in st.get("evidence") or [] if e.get("severity") in ("hard", "soft", "good"))
+        shown = ([e for e in active if e.get("severity") == "hard"] or [e for e in active if e.get("severity") == "soft"]
+                 or [e for e in active if e.get("severity") == "good"])  # the row shows the worst class, and its newest finding
+        t["last_evidence"] = compact_evidence(shown[-1]) if shown else None
+        t["last_evidence_ago"] = ago(parse_iso(shown[-1].get("ts"))) if shown else None
+        t["last_evidence_severity"] = shown[-1].get("severity") if shown else None
         t["evidence"] = evidence_entries(st.get("evidence") or [], active)
     index_rows = list(iter_jsonl(PROBES_INDEX))
     by_thread: dict[str, list] = {}
@@ -1936,7 +2021,7 @@ def build_snapshot(cfg: dict, hours: float = 48.0) -> dict:
         if row.get("thread_id"):
             by_thread.setdefault(row["thread_id"], []).append(row)
     out_threads = []
-    downgraded = running = suspicious = unverified = 0
+    downgraded = running = suspicious = unverified = upgraded = 0
     for t in threads.values():
         rows = by_thread.get(t["id"], [])
         valid = [r for r in rows if probe_row_valid(r)]
@@ -1952,12 +2037,17 @@ def build_snapshot(cfg: dict, hours: float = 48.0) -> dict:
         t["active"] = bool(t["updated_ts"]) and (now() - t["updated_ts"]) < 15 * 60
         t["alert"] = t["hard_evidence"] > 0 or bool(t["last_probe"] and t["last_probe"]["is_downgrade"] and not stale)
         t["suspicious"] = bool(t["last_probe"] and t["last_probe"]["is_suspicious"] and not stale) and not t["alert"]
+        t.setdefault("good_evidence", 0)
+        t.setdefault("last_evidence_severity", None)
+        t["upgraded"] = (t["good_evidence"] > 0 or bool(t["last_probe"] and t["last_probe"].get("is_upgrade") and not stale)) \
+            and not t["alert"] and not t["suspicious"]
         downgraded += 1 if t["alert"] else 0
         suspicious += 1 if t["suspicious"] else 0
+        upgraded += 1 if t["upgraded"] else 0
         unverified += 1 if stale else 0
         running += 1 if t["probe_running"] else 0
         out_threads.append(t)
-    out_threads.sort(key=lambda t: (not t["alert"], not t["suspicious"], -(t["updated_ts"] or 0)))
+    out_threads.sort(key=lambda t: (not t["alert"], not t["suspicious"], not t["upgraded"], -(t["updated_ts"] or 0)))
     evs = tail_jsonl(EVENTS_PATH, 1)
     last_event = evs[0] if evs else None
     fresh_rows = [r for r in index_rows if r.get("mode") == "fresh"]
@@ -1968,6 +2058,8 @@ def build_snapshot(cfg: dict, hours: float = 48.0) -> dict:
     last_verdict = probe_summary(valid_rows[-1], acct["id"]) if valid_rows else None
     global_stale = bool(global_probe and global_probe["stale_account"])
     global_alert = bool(global_probe and global_probe["is_downgrade"] and not global_stale)
+    global_upgraded = bool(global_probe and global_probe.get("is_upgrade") and not global_stale)
+    upgraded += 1 if global_upgraded else 0
     fr = fresh_running()
     downgraded += 1 if global_alert else 0
     suspicious += 1 if (global_probe and global_probe["is_suspicious"] and not global_alert and not global_stale) else 0
@@ -1980,13 +2072,15 @@ def build_snapshot(cfg: dict, hours: float = 48.0) -> dict:
     if suspicious:
         parts.append(f"{suspicious} suspicious")
     if not parts:
-        parts.append("all clear" if (out_threads or global_probe) else "no active threads")
+        parts.append(f"{upgraded} upgraded" if upgraded else ("all clear" if (out_threads or global_probe) else "no active threads"))
+    elif upgraded:
+        parts.append(f"{upgraded} upgraded")
     if unverified:  # a verdict from another account (or from before accounts were tracked): not a problem, just not current
         parts.append(f"{unverified} unverified")
     if running:
         parts.append(f"{running} probe{'s' if running > 1 else ''} running")
     message = " · ".join(parts)
-    status = "alert" if downgraded else ("warn" if suspicious else ("unverified" if unverified else "ok"))
+    status = "alert" if downgraded else ("warn" if suspicious else ("upgraded" if upgraded else ("unverified" if unverified else "ok")))
     for t in out_threads:  # surface the worker's progress note (e.g. waiting for a live turn to finish)
         t["probe_note"] = t.pop("_probe_note", None)
     account_label = acct["label"]
@@ -2004,7 +2098,7 @@ def build_snapshot(cfg: dict, hours: float = 48.0) -> dict:
     state = read_json(STATE_PATH, {}) or {}
     if state.get("last_status") != status or state.get("last_message") != message:
         log_event("status_change", level="warn" if status in ("alert", "warn") else "info", from_status=state.get("last_status"),
-                  to_status=status, message=message, downgraded=downgraded, suspicious=suspicious, unverified=unverified)
+                  to_status=status, message=message, downgraded=downgraded, suspicious=suspicious, unverified=unverified, upgraded=upgraded)
         write_json(STATE_PATH, {**state, "last_status": status, "last_message": message, "changed_at": iso()})
     install = {"plugin_enabled": plugin_enabled_in_config(), "codex_found": bool(codex_bin(cfg)),
                "marketplace_root": os.path.dirname(PLUGIN_ROOT), "bundled": "/Contents/Resources/" in PLUGIN_ROOT}
@@ -2012,9 +2106,9 @@ def build_snapshot(cfg: dict, hours: float = 48.0) -> dict:
             "hooks_last_event": (last_event or {}).get("ts"), "hooks_last_event_ago": ago(parse_iso((last_event or {}).get("ts"))),
             "hooks": hooks, "install": install, "fresh_due": fresh_due(cfg, acct["id"]),
             "overall": {"status": status, "downgraded": downgraded, "suspicious": suspicious, "unverified": unverified,
-                        "running": running, "message": message},
+                        "upgraded": upgraded, "running": running, "message": message},
             "default_model": default_model, "default_effort": default_effort,
-            "global_probe": global_probe, "global_running": bool(fr), "global_alert": global_alert,
+            "global_probe": global_probe, "global_running": bool(fr), "global_alert": global_alert, "global_upgraded": global_upgraded,
             "global_probes": global_probes, "global_report_text": global_report_text, "global_failure": global_failure,
             "last_verdict": last_verdict,
             "account": {"label": account_label, "plan": acct["plan"], "switched_at": acct.get("switched_at"),
@@ -2155,8 +2249,9 @@ def cmd_report(args) -> int:
     sessions = all_sessions()
     hard = [(s, e) for s in sessions for e in s.get("evidence") or [] if e.get("severity") == "hard"]
     soft = [(s, e) for s in sessions for e in s.get("evidence") or [] if e.get("severity") == "soft"]
-    print(f"passive scanner: {len(sessions)} sessions tracked, {len(hard)} hard findings, {len(soft)} soft findings")
-    for s, e in (hard + soft)[-15:]:
+    good = [(s, e) for s in sessions for e in s.get("evidence") or [] if e.get("severity") == "good"]
+    print(f"passive scanner: {len(sessions)} sessions tracked, {len(hard)} hard findings, {len(soft)} soft findings, {len(good)} upgrades")
+    for s, e in (hard + soft + good)[-15:]:
         print(f"  {e.get('ts')}  {short(s['sid'], 12)}  {evidence_line(e)}")
     return 0
 
@@ -2640,6 +2735,9 @@ METHOD = f"""is-gpt-nerfed — how the verdict is made (v{VERSION})
      hard  context_window_change   the context window shrank mid-session (a different model class answered)
      soft  applied_model_change    the app applied a lower-tier model through thread settings (you, or the app?)
      soft  service_tier_change     the Fast/priority tier was dropped
+     good  model upgrade           the thread moved to a newer generation or larger model (a rollout): good news
+   Better or worse is not a fixed list: Codex's catalog succession pointer, hidden internal models, the generation
+   and size tier in the slug, then the catalog's own ranking decide it (compare_models).
 2. ACTIVE (on your schedule, or when you say {SKILL_CMD}). ModelTrace fingerprinting (MIT, xqy2006):
    the thread is forked `ephemeral: true` {DEFAULT_CONFIG['queries']} times at its last completed turn — the same mechanism
    as Codex's /side — and each fork is asked for ~300 "random" integers in 1..355 with no tools. The value

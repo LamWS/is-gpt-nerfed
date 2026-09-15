@@ -21,6 +21,7 @@ struct Snapshot: Codable {
     var globalProbes: [ProbeSummary]?
     var globalReportText: String?
     var globalFailure: ProbeSummary?     // a failed fresh-session attempt newer than the last verdict (Retry)
+    var globalUpgraded: Bool?
     var lastVerdict: ProbeSummary?       // the newest probe of any kind that produced a verdict
     var account: AccountInfo?
     var threads: [ThreadInfo]
@@ -65,6 +66,7 @@ struct Overall: Codable {
     var status: String
     var downgraded: Int
     var suspicious: Int?
+    var upgraded: Int?
     var unverified: Int?
     var running: Int
     var message: String
@@ -112,6 +114,9 @@ struct ThreadInfo: Codable, Identifiable {
     var evidenceHistory: Int?
     var lastEvidence: String?
     var lastEvidenceAgo: String?
+    var lastEvidenceSeverity: String?    // hard | soft | good: what the row's evidence line is about
+    var goodEvidence: Int?
+    var upgraded: Bool?                  // moved to a better model (a rollout): good news
     var lastProbe: ProbeSummary?         // the verdict: the newest probe that produced one
     var lastFailure: ProbeSummary?       // a failed attempt newer than that verdict: only asks for Retry
     var probes: [ProbeSummary]?          // this thread's probe history, newest first (the in-place report)
@@ -157,6 +162,7 @@ struct ProbeSummary: Codable, Identifiable {
     var errors: [String]?
     var quote: String?
     var isDowngrade: Bool?
+    var isUpgrade: Bool?
     var isSuspicious: Bool?
     var staleAccount: Bool?
     var accountState: String?   // current | other | unknown

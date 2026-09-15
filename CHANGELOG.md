@@ -7,6 +7,10 @@
   else moves. Right-click for Probe, Copy report, Reveal folder. Settings is a page of its own. Fresh session sits
   below the threads; the header is the chip face with one short line per fact; the panel is a little narrower.
   The Report window is gone (the report lives in the rows; `nerfed report` remains).
+- Upgraded: a move to a better model (a rollout such as gpt-5.6-sol → gpt-6-sol) is a state of its own, shown in green
+  and notified, from the passive scanner or the fingerprint. Better or worse is decided by `compare_models`, not a
+  fixed list: Codex's catalog succession pointer, hidden internal models, the generation and size tier in the slug,
+  then Codex's own ranking, the highest supported reasoning effort and the context window.
 - The headline is "All clear" unless something is downgraded or suspicious; an unverified count (a verdict from
   another account, or from before accounts were tracked) follows on the next line instead of being the headline.
 - Fixed: the SessionStart hook crashed (silently, in the fail-safe) on a keyword collision, so session starts were
