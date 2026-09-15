@@ -1452,6 +1452,33 @@ def cmd_resume(args) -> int:
 # ------------------------------------------------------------------------------------ reporting
 
 
+def compact_evidence(e: dict) -> str:
+    """One short line for the panel (the full sentence stays in the ledger, report and pet quotes)."""
+    kind, detail = e.get("kind") or "", e.get("detail") or ""
+    m = re.search(r"(\S+) → (\S+)", detail)
+    a, b = (m.group(1), m.group(2)) if m else (None, None)
+
+    def k(v: str) -> str:
+        return f"{int(v) // 1000}k" if v.isdigit() and int(v) >= 1000 else v
+
+    if kind == "silent_model_change" and a:
+        return f"Silent model change: {a} → {b}"
+    if kind == "applied_model_change" and a:
+        return f"Settings: model {a} → {b}"
+    if kind == "silent_effort_change" and a:
+        return f"Silent effort change: {a} → {b}"
+    if kind == "applied_effort_change" and a:
+        return f"Settings: effort {a} → {b}"
+    if kind == "hidden_model":
+        m2 = re.search(r"model (\S+) ran", detail)
+        return f"Hidden model ran: {m2.group(1)}" if m2 else "Hidden model ran a turn"
+    if kind == "context_window_change" and a:
+        return f"Context window {k(a)} → {k(b)}"
+    if kind == "service_tier_change" and a:
+        return f"Tier {a} → {b}"
+    return detail[:80]
+
+
 def evidence_line(e: dict) -> str:
     return f"{e['kind']} [{e['severity']}] {e['detail']}"
 
@@ -1554,7 +1581,7 @@ def demo_snapshot(cfg: dict) -> dict:
     threads = [
         thread("payments", "Refactor payment webhooks", "gpt-6-astra", "xhigh", 14, 120,
                probe("a1b2c3d4e5", "payments", "MISMATCH", "downgrade", pred="gpt-5.6-luna", p=0.91, p_exp=0.03, margin=1.31, ago_s=240),
-               hard=1, ev="model gpt-6-astra → gpt-reserve with no settings change (downgrade)"),
+               hard=1, ev="Silent model change: gpt-6-astra → gpt-reserve"),
         thread("ci-flaky", "Investigate flaky CI on main", "gpt-6-astra", "high", 6, 300,
                probe("b2c3d4e5f6", "ci-flaky", "SUSPICIOUS", "downgrade", pred="gpt-5.6-sol", p=0.62, p_exp=0.31, margin=0.28, n=6, q=6, rounds=2, ago_s=660)),
         thread("oauth", "Add OAuth device flow", "gpt-6-astra", "max", 22, 720,
@@ -1665,7 +1692,7 @@ def cmd_snapshot(args) -> int:
         t["hard_evidence"] = sum(1 for e in evs if e.get("severity") == "hard")
         t["soft_evidence"] = sum(1 for e in evs if e.get("severity") == "soft")
         flagged = [e for e in evs if e.get("severity") in ("hard", "soft")]
-        t["last_evidence"] = flagged[-1]["detail"] if flagged else None
+        t["last_evidence"] = compact_evidence(flagged[-1]) if flagged else None
     index_rows = list(iter_jsonl(PROBES_INDEX))
     latest: dict[str, dict] = {}
     for row in index_rows:
