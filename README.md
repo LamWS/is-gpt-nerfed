@@ -148,8 +148,9 @@ Uninstall: `./uninstall.sh` (add `--purge` to delete the local ledger).
 ./macos/build.sh --zip        # dist/IsGPTNerfed-<version>.zip (+ .sha256) for a release
 ```
 
-The app icon is `macos/icon.svg` (a lens over a downgrade); `macos/icons/` holds the alternatives (`bars.svg`,
-`inspector.svg`); copy one over `icon.svg` and rebuild to switch.
+The app icon comes from `macos/icon.png` (1024×1024) when present, else from `macos/icon.svg` (a lens over a
+downgrade; alternatives in `macos/icons/`). `tools/set_icon.sh some.png` adopts a generated image as icon and plugin logo
+and rebuilds.
 
 Prebuilt zips on the Releases page are ad-hoc signed, not notarized: the first launch needs right-click → Open, or
 `xattr -dr com.apple.quarantine ~/Applications/IsGPTNerfed.app`. The app needs the plugin installed (it runs `nerfed`
