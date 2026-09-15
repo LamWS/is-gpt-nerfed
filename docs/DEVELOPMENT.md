@@ -47,6 +47,10 @@ NERFED_DEMO=1 ~/Applications/IsGPTNerfed.app/Contents/MacOS/IsGPTNerfed --render
 - Verdict gate (`mismatch_confidence` 0.8): Mismatch needs p(top) ≥ 0.8, p(declared) ≤ 0.2 and a fused z-score margin
   ≥ 0.5σ, because ModelTrace's calibrated softmax amplifies small gaps.
 - Fresh-session probe: `thread/start` with `ephemeral: true`, no history.
+- Every request Codex makes carries an originator (the desktop app: `Codex Desktop`; the CLI: `codex_cli_rs`); a
+  session started through the app-server would carry the client's `clientInfo` name instead. The probe process sets
+  `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` to the probed session's originator (or the binary's owner for fresh probes),
+  so the service sees the same client. `probe_originator` and `--originator` override it for A/B tests.
 - The zh and en prompts are ModelTrace's own texts, verbatim. Its bank was enrolled under twelve unnamed conditions and
   its author calls other languages uncalibrated, so the prompt language is not a user setting (`languages` stays as a
   config key).

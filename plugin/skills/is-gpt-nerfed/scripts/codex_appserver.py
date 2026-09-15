@@ -18,7 +18,7 @@ import threading
 import time
 import uuid
 
-CLIENT_INFO = {"name": "is-gpt-nerfed", "version": "0.4.0"}
+CLIENT_INFO = {"name": "is-gpt-nerfed", "version": "0.4.2"}
 FINISHED_TURN = ("completed", "interrupted", "failed")
 MESSAGE_ITEMS = ("userMessage", "agentMessage", "reasoning", "hookPrompt")
 
@@ -51,9 +51,14 @@ def fork_prompt(language: str, count: int) -> str:
 class AppServer:
     """JSON-RPC-over-stdio client. Server-initiated requests (approvals, user input) are always refused."""
 
-    def __init__(self, codex_bin: str, env: dict | None = None, hooks_enabled: bool = False):
+    def __init__(self, codex_bin: str, env: dict | None = None, hooks_enabled: bool = False, originator: str | None = None):
         environ = dict(os.environ if env is None else env)
         environ["NERFED_PROBE_PROCESS"] = "1"
+        if originator:
+            # The originator is the client name Codex reports to the service with every request (the desktop app says
+            # "Codex Desktop"). A probe identifies itself as the client it checks for, in case routing depends on it;
+            # without this, sessions started through the app-server carry the clientInfo name instead.
+            environ["CODEX_INTERNAL_ORIGINATOR_OVERRIDE"] = originator
         # Our private app-server must not fire anyone's hooks or desktop notifications while it probes.
         # (`hooks_enabled` is only used to inspect/trust hook definitions; no turn ever runs in that mode.)
         args = [codex_bin, "app-server", "--stdio", "-c", "notify=[]"]
@@ -374,12 +379,13 @@ def run_turns(app: AppServer, forks: list[dict], deadline: float, parallel: bool
 
 
 def probe_thread(codex_bin: str, thread_id: str, queries: int = 3, languages=("zh", "en"), timeout_s: float = 180,
-                 parallel: bool = True, rng: random.Random | None = None, busy_wait_s: float = 0.0, on_wait=None) -> dict:
+                 parallel: bool = True, rng: random.Random | None = None, busy_wait_s: float = 0.0, on_wait=None,
+                 originator: str | None = None) -> dict:
     """Fork `thread_id` `queries` times (same finished turn), ask each fork for a number sequence, return the answers.
     A thread with a live turn is forked at its previous finished turn; if none is forkable, wait up to `busy_wait_s`."""
     rng = rng or random.Random()
     t0 = time.time()
-    app = AppServer(codex_bin)
+    app = AppServer(codex_bin, originator=originator)
     try:
         app.initialize()
         thread = read_thread(app, thread_id)
@@ -396,8 +402,10 @@ def probe_thread(codex_bin: str, thread_id: str, queries: int = 3, languages=("z
     finally:
         app.close()
     return {
+        "originator": originator,
         "thread": {"id": thread["id"], "model": thread.get("model"), "provider": thread.get("modelProvider"),
                    "effort": thread.get("reasoningEffort"), "cwd": thread.get("cwd"), "path": thread.get("path"),
+                   "originator": thread.get("originator"),
                    "name": thread.get("name"), "last_turn": turn["id"], "last_turn_status": turn.get("status")},
         "forks": [{k: v for k, v in f.items() if k != "prompt"} for f in forks],
         "elapsed_s": round(time.time() - t0, 1), "parallel": parallel,
@@ -447,18 +455,18 @@ def start_ephemeral(app: AppServer, model: str, effort: str | None, provider: st
         raise AppServerError(f"fresh thread model differs from the request ({response.get('model')} vs {model})")
     return {"id": thread["id"], "model": response.get("model") or model, "provider": response.get("modelProvider") or provider,
             "effort": response.get("reasoningEffort") or effort, "cwd": response.get("cwd") or cwd,
-            "service_tier": response.get("serviceTier")}
+            "service_tier": response.get("serviceTier"), "originator": thread.get("originator")}
 
 
 def probe_fresh(codex_bin: str, model: str, effort: str | None = None, provider: str | None = "openai", cwd: str | None = None,
                 queries: int = 3, languages=("zh", "en"), timeout_s: float = 180, parallel: bool = True,
-                rng: random.Random | None = None) -> dict:
+                rng: random.Random | None = None, originator: str | None = None) -> dict:
     """Global probe: `queries` brand-new ephemeral sessions (no conversation context), one text-only turn each."""
     rng = rng or random.Random()
     cwd = cwd or os.path.expanduser("~")
     t0 = time.time()
     deadline = t0 + timeout_s
-    app = AppServer(codex_bin)
+    app = AppServer(codex_bin, originator=originator)
     try:
         app.initialize()
         forks = []
@@ -472,6 +480,7 @@ def probe_fresh(codex_bin: str, model: str, effort: str | None = None, provider:
     finally:
         app.close()
     return {
+        "originator": originator,
         "thread": {"id": None, "model": forks[0]["model"] if forks else model, "provider": provider, "effort": forks[0].get("effort") if forks else effort,
                    "cwd": cwd, "path": None, "name": "fresh session", "last_turn": None},
         "forks": [{k: v for k, v in f.items() if k != "prompt"} for f in forks],

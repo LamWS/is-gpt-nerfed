@@ -73,6 +73,7 @@ def main():
         sys.exit(1)
     model = os.environ.get("FAKE_CODEX_MODEL", "gpt-6-astra")
     thread_model = os.environ.get("FAKE_CODEX_THREAD_MODEL", model)
+    originator = os.environ.get("CODEX_INTERNAL_ORIGINATOR_OVERRIDE") or "fake-client"  # what the real codex reports
     texts = texts_for(model)
     log = os.environ.get("FAKE_CODEX_LOG")
     forks = {}
@@ -97,7 +98,7 @@ def main():
             else:
                 send({"id": rid, "result": {"thread": {"id": tid, "path": f"/tmp/fake/{tid}.jsonl", "ephemeral": False,
                                                        "model": thread_model, "modelProvider": "openai", "reasoningEffort": "high",
-                                                       "cwd": "/tmp/fake-project", "name": "fake thread"}}})
+                                                       "cwd": "/tmp/fake-project", "name": "fake thread", "originator": "Codex Desktop"}}})
         elif method == "thread/turns/list":
             send({"id": rid, "result": {"data": turns(), "nextCursor": None}})
         elif method == "thread/fork":
@@ -108,8 +109,16 @@ def main():
                 continue
             fid = "ephemeral-" + uuid.uuid4().hex[:8]
             forks[fid] = params
-            send({"id": rid, "result": {"thread": {"id": fid, "ephemeral": True, "forkedFromId": params["threadId"], "cwd": params.get("cwd"),
+            send({"id": rid, "result": {"thread": {"id": fid, "ephemeral": True, "originator": originator, "forkedFromId": params["threadId"], "cwd": params.get("cwd"),
                                                    "model": params.get("model")},
+                                        "model": params.get("model"), "modelProvider": params.get("modelProvider"),
+                                        "reasoningEffort": (params.get("config") or {}).get("model_reasoning_effort"),
+                                        "cwd": params.get("cwd"), "serviceTier": None}})
+        elif method == "thread/start":  # a brand-new ephemeral session (the fresh probe)
+            fid = "fresh-" + uuid.uuid4().hex[:8]
+            forks[fid] = params
+            send({"id": rid, "result": {"thread": {"id": fid, "ephemeral": bool(params.get("ephemeral", True)), "originator": originator,
+                                                   "cwd": params.get("cwd"), "model": params.get("model")},
                                         "model": params.get("model"), "modelProvider": params.get("modelProvider"),
                                         "reasoningEffort": (params.get("config") or {}).get("model_reasoning_effort"),
                                         "cwd": params.get("cwd"), "serviceTier": None}})

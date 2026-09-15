@@ -610,6 +610,9 @@ class ForkProbeTests(unittest.TestCase):
 
 
 class SnapshotReportTests(unittest.TestCase):
+    def setUp(self):
+        dgc.save_config({**dgc.DEFAULT_CONFIG, "codex_bin": FAKE_CODEX, "notify": False, "sound": False, "probe_timeout_s": 30})
+
     def test_snapshot_carries_per_thread_reports(self):
         snap = json.loads(run_cli(["snapshot", "--json", "--demo"])[1])
         t = next(t for t in snap["threads"] if t["id"] == "payments")
@@ -642,6 +645,19 @@ class SnapshotReportTests(unittest.TestCase):
         self.assertEqual(after, before, "the SessionStart hook must not crash")
         events = [e for e in dgc.iter_jsonl(os.path.join(dgc.NERFED_HOME, "log.jsonl")) if e.get("kind") == "session_start"]
         self.assertTrue(events and events[-1].get("sid") == "start-thread-1" and events[-1].get("session_kind") == "main")
+
+    def test_probes_identify_as_the_client_they_check_for(self):
+        self.assertEqual(dgc.default_originator("/Applications/ChatGPT.app/Contents/Resources/codex"), "Codex Desktop")
+        self.assertEqual(dgc.default_originator("/opt/homebrew/bin/codex"), "codex_cli_rs")
+        self.assertEqual(dgc.resolve_originator({"probe_originator": "auto"}, "/opt/homebrew/bin/codex", {"originator": "Codex Desktop"}), "Codex Desktop")
+        self.assertEqual(dgc.resolve_originator({"probe_originator": "my-client"}, "/opt/homebrew/bin/codex", {"originator": "Codex Desktop"}), "my-client")
+        self.assertEqual(dgc.resolve_originator({"probe_originator": "auto"}, None, None, "override"), "override")
+        code, out = run_cli(["probe", "fresh", "--model", "gpt-6-astra", "--queries", "1", "--originator", "Codex Desktop"], {"FAKE_CODEX_MODEL": "gpt-6-astra"})
+        self.assertEqual(code, 0, out)
+        rec = dgc.read_json(dgc.probe_path([r for r in dgc.iter_jsonl(dgc.PROBES_INDEX) if r.get("mode") == "fresh"][-1]["id"]))
+        self.assertEqual(rec["originator"], "Codex Desktop")
+        self.assertEqual(rec["forks"][0].get("originator"), "Codex Desktop", "the fake server saw the override, as the real codex would")
+        self.assertIn("as Codex Desktop", dgc.probe_line(dgc.probe_summary({"id": rec["id"], "verdict": "MATCH"})))
 
     def test_update_check_status_and_versions(self):
         self.assertEqual(dgc.version_tuple("v0.4.2"), (0, 4, 2))

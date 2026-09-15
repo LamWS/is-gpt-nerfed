@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.2 — 2026-09-16
+
+- Probes identify themselves to the service as the client they check for: the probed session's own originator
+  (`Codex Desktop`, or `codex_cli_rs`), instead of the probe's clientInfo name. If routing depends on the client, the
+  probe now sees what the desktop sees. `probe_originator` in the config and `--originator` on `probe now` / `probe
+  fresh` override it for A/B tests; the report says which client a probe ran as.
+
 ## 0.4.1 — 2026-09-15
 
 - "Session" everywhere the panel, the CLI and the docs speak to people (Codex's API keeps calling them threads).

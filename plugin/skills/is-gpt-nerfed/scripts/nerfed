@@ -39,7 +39,7 @@ sys.path.insert(0, HERE)
 import codex_appserver as cas  # noqa: E402
 import modeltrace_core as core  # noqa: E402
 
-VERSION = "0.4.1"
+VERSION = "0.4.2"
 DGC_BIN = os.path.abspath(__file__)
 SKILL_DIR = os.path.dirname(HERE)
 PLUGIN_ROOT = os.environ.get("PLUGIN_ROOT") or os.environ.get("CLAUDE_PLUGIN_ROOT") or os.path.dirname(os.path.dirname(SKILL_DIR))
@@ -89,6 +89,7 @@ DEFAULT_CONFIG = {
     "mismatch_confidence": 0.8,      # MISMATCH needs p(top) ≥ this, p(declared) ≤ 1-this and a score margin ≥ 0.5σ
     "confirm_uncertain": False,      # opt in: a SUSPICIOUS first round triggers one more round (three more answers)
     "check_updates": True,           # every 10 min, one request to GitHub for the latest release tag; off = no network at all
+    "probe_originator": "auto",      # the client the probes identify as: auto = the session's own (Codex Desktop, or the CLI)
     "hide_titles": False,            # panel shows "Session 1…N" and hides the account label (screenshot mode)
     "fresh_frequency": "manual",     # heartbeat for the fresh-session probe: "30m", "2h" … (time only; "manual" = off)
     "codex_bin": None,
@@ -1115,7 +1116,23 @@ def finalize_probe(rec: dict, outputs: list[dict], expected: str | None, errors:
     return rec
 
 
-def run_fork_probe(thread_id: str, cfg: dict, queries: int | None = None, quiet: bool = False) -> dict:
+def default_originator(codex_bin: str | None) -> str:
+    """What the user's own client reports as its originator: the desktop app when its bundled binary is used."""
+    return "Codex Desktop" if codex_bin and ".app/Contents/" in codex_bin else "codex_cli_rs"
+
+
+def resolve_originator(cfg: dict, codex_bin: str | None, thread_row: dict | None = None, override: str | None = None) -> str:
+    """The originator a probe runs under: an explicit override, then the config, then the probed session's own,
+    then the client that owns the codex binary."""
+    if override:
+        return override
+    configured = str(cfg.get("probe_originator") or "auto")
+    if configured != "auto":
+        return configured
+    return (thread_row or {}).get("originator") or default_originator(codex_bin)
+
+
+def run_fork_probe(thread_id: str, cfg: dict, queries: int | None = None, quiet: bool = False, originator: str | None = None) -> dict:
     ensure_dirs()
     cb = codex_bin(cfg)
     if not cb:
@@ -1138,10 +1155,15 @@ def run_fork_probe(thread_id: str, cfg: dict, queries: int | None = None, quiet:
             if st.get("probe_running"):
                 st["probe_running"]["note"] = "waiting for the current turn to finish"
 
+    orig = resolve_originator(cfg, cb, db_thread(thread_id), originator)
+    rec["originator"] = orig
+    write_json(probe_path(rec["id"]), rec)
+    log_event("probe_originator", probe=rec["id"], sid=thread_id, originator=orig)
+
     def runner():
         return cas.probe_thread(cb, thread_id, queries=q, languages=cfg.get("languages") or ["zh", "en"],
                                 timeout_s=float(cfg.get("probe_timeout_s") or 180), parallel=bool(cfg.get("parallel", True)),
-                                busy_wait_s=float(cfg.get("busy_wait_s") or 600), on_wait=on_wait)
+                                busy_wait_s=float(cfg.get("busy_wait_s") or 600), on_wait=on_wait, originator=orig)
 
     outputs, errors, out = probe_round(runner, rec)
     if out:
@@ -1224,7 +1246,8 @@ def default_model_settings() -> tuple[str | None, str | None]:
     return model, effort
 
 
-def run_fresh_probe(cfg: dict, model: str | None = None, effort: str | None = None, queries: int | None = None, quiet: bool = False) -> dict:
+def run_fresh_probe(cfg: dict, model: str | None = None, effort: str | None = None, queries: int | None = None, quiet: bool = False,
+                    originator: str | None = None) -> dict:
     """Global probe: brand-new ephemeral sessions, no history. Answers 'what does a new session get right now?'."""
     ensure_dirs()
     cb = codex_bin(cfg)
@@ -1244,9 +1267,15 @@ def run_fresh_probe(cfg: dict, model: str | None = None, effort: str | None = No
     log_event("probe_start", probe=rec["id"], mode="fresh", model=model, effort=effort, queries=q, account=acct["id"])
     expected = model
 
+    orig = resolve_originator(cfg, cb, None, originator)
+    rec["originator"] = orig
+    write_json(probe_path(rec["id"]), rec)
+    log_event("probe_originator", probe=rec["id"], mode="fresh", originator=orig)
+
     def runner():
         return cas.probe_fresh(cb, model, effort=effort, queries=q, languages=cfg.get("languages") or ["zh", "en"],
-                               timeout_s=float(cfg.get("probe_timeout_s") or 180), parallel=bool(cfg.get("parallel", True)))
+                               timeout_s=float(cfg.get("probe_timeout_s") or 180), parallel=bool(cfg.get("parallel", True)),
+                               originator=orig)
 
     try:
         outputs, errors, out = probe_round(runner, rec)
@@ -1476,7 +1505,7 @@ def cmd_probe_now(args) -> int:
               "in the background the moment this turn ends. The verdict pops up as a notification; it is also shown at the "
               f"start of the next turn and in `{DGC_BIN} report`.")
         return 0
-    run_fork_probe(tid, cfg, queries=args.queries, quiet=False)
+    run_fork_probe(tid, cfg, queries=args.queries, quiet=False, originator=getattr(args, "originator", None))
     return 0
 
 
@@ -1507,7 +1536,7 @@ def cmd_probe_fresh(args) -> int:
     cfg = load_config()
     if fresh_running():
         raise SystemExit("a fresh-session probe is already running")
-    run_fresh_probe(cfg, model=args.model, effort=args.effort, queries=args.queries, quiet=False)
+    run_fresh_probe(cfg, model=args.model, effort=args.effort, queries=args.queries, quiet=False, originator=getattr(args, "originator", None))
     return 0
 
 
@@ -1774,6 +1803,8 @@ def probe_line(p: dict) -> str:
         parts.append(f"{p['elapsed_s']:.0f} s")
     if p.get("finished_ago"):
         parts.append(p["finished_ago"])
+    if p.get("originator"):
+        parts.append(f"as {p['originator']}")
     if p.get("stale_account"):  # a verdict from another account is not one for this account
         parts[0] = "Unverified"
         parts.insert(1, f"{word}, account unknown" if p.get("account_state") == "unknown" else f"{word}, another account")
@@ -1831,6 +1862,7 @@ def probe_summary(row: dict, current: str | None = None) -> dict:
         "used_outputs": row.get("used_outputs"), "queries": (row.get("queries") or 1) * (row.get("rounds") or full.get("rounds") or 1),
         "rounds": row.get("rounds") or full.get("rounds") or 1,
         "elapsed_s": row.get("elapsed_s"), "errors": errors[:4], "quote": full.get("quote"), "started": full.get("started"),
+        "originator": full.get("originator"),
         "results": [{"model": r.get("model"), "probability": r.get("probability")} for r in (full.get("results") or [])[:4]],
         "is_downgrade": verdict == "DOWNGRADED!" or (verdict == "MISMATCH" and row.get("direction") == "downgrade"),
         "is_upgrade": verdict == "MISMATCH" and row.get("direction") == "upgrade",
@@ -2486,6 +2518,7 @@ def cmd_explain(args) -> int:
     if not rec:
         raise SystemExit("unknown probe id")
     print(f"probe {rec['id']}  mode={rec.get('mode')}  status={rec.get('status')}  started={rec.get('started')}  finished={rec.get('finished')}")
+    print(f"identified as {rec.get('originator') or '(clientInfo name)'}")
     print(f"session {rec.get('thread_id')}  expected {rec.get('expected')}  →  fingerprint {rec.get('prediction')} "
           f"({(rec.get('probability') or 0) * 100:.1f}%)  verdict {rec.get('verdict')} {rec.get('direction') or ''}")
     if rec.get("calibration"):
@@ -3014,11 +3047,13 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--mode", choices=["auto", "fork", "self"], default="auto")
     a.add_argument("--force", action="store_true", help="run inline even inside a network-less sandbox")
     a.add_argument("--no-pick", action="store_true", help="skip the interactive picker and guess the session")
+    a.add_argument("--originator", help="identify the probe as this client (default: the session's own, e.g. 'Codex Desktop')")
     a.set_defaults(fn=cmd_probe_now)
     a = ps.add_parser("fresh", help="global probe: brand-new ephemeral sessions with the default model, no history")
     a.add_argument("--model", help="model slug (default: config.toml model)")
     a.add_argument("--effort", help="reasoning effort (default: config.toml)")
     a.add_argument("--queries", type=int, default=None)
+    a.add_argument("--originator", help="identify the probe as this client (default: 'Codex Desktop' with the app's binary, else codex_cli_rs)")
     a.set_defaults(fn=cmd_probe_fresh)
     a = ps.add_parser("submit-numbers", help="(self-answer mode) submit one challenge answer")
     a.add_argument("probe_id")

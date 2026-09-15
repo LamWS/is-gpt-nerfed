@@ -110,7 +110,9 @@ verdicts show as "another account" and those sessions are probed again.
 - A probe costs three short answers on your account.
 - A model or effort change made through Codex's own settings is shown as a question ("was that you?"), because the
   plugin cannot tell whether you or Codex changed it.
-- The forks run through a private connection to Codex's app-server, not through the desktop app's own.
+- The probes run in a private app-server process that identifies itself as the client it checks for (the desktop app,
+  or the CLI), because the service may route by client. Anything else that differs between the desktop's own
+  connection and the probe's is invisible to it.
 
 ## Privacy
 
