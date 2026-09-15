@@ -111,7 +111,8 @@ The app also logs to the unified log (Console.app, subsystem `is-gpt-nerfed`).
 
 ## Release
 
-Tag releases `vX.Y.Z` and attach the zip and its `.sha256` (`build.sh --zip` writes both): the app asks GitHub every
+Tag releases `vX.Y.Z` and attach the zip and its `.sha256` (`build.sh --zip` writes both; `build.sh --dmg` adds a
+disk image for first-time downloads, the self-updater only reads the zip): the app asks GitHub every
 10 minutes for the latest release tag
 (`nerfed update-check`, result in `~/.codex/is-gpt-nerfed/update.json`, `check_updates` to switch it off) and shows
 "vX.Y.Z is out · update" in the footer, with one notification per new version. Clicking it runs

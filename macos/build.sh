@@ -1,6 +1,6 @@
 #!/bin/sh
 # Build IsGPTNerfed.app (menu bar app) with SwiftPM and assemble an ad-hoc signed bundle.
-# Usage: ./macos/build.sh [--run | --install | --zip]     (needs Xcode 26+ / macOS 26 SDK)
+# Usage: ./macos/build.sh [--run | --install | --zip | --dmg]     (needs Xcode 26+ / macOS 26 SDK)
 #   --run      launch from the build folder
 #   --install  copy to ~/Applications and launch
 #   --zip      write dist/IsGPTNerfed-<version>.zip for a GitHub release (ad-hoc signed: first launch needs
@@ -61,4 +61,13 @@ case "${1:-}" in
     ditto -c -k --keepParent "$APP" "$ZIP"
     shasum -a 256 "$ZIP" | tee "$ZIP.sha256"
     echo "release archive: $ZIP" ;;
+  --dmg)   # for people: a disk image with the app and an Applications shortcut (the updater uses the zip)
+    VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$HERE/Info.plist")"
+    DIST="$HERE/../dist"; mkdir -p "$DIST"
+    DMG="$DIST/IsGPTNerfed-$VERSION.dmg"; rm -f "$DMG"
+    STAGE="$(mktemp -d)"; cp -R "$APP" "$STAGE/"; ln -s /Applications "$STAGE/Applications"
+    hdiutil create -volname "IsGPTNerfed $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
+    rm -rf "$STAGE"
+    shasum -a 256 "$DMG" | tee "$DMG.sha256"
+    echo "disk image: $DMG" ;;
 esac
