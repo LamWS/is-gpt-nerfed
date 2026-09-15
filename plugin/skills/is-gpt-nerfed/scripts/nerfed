@@ -52,6 +52,11 @@ SESSIONS_DIR = os.path.join(NERFED_HOME, "sessions")
 PROBES_DIR = os.path.join(NERFED_HOME, "probes")
 ERRORS_PATH = os.path.join(NERFED_HOME, "errors.log")
 WORKER_LOG = os.path.join(NERFED_HOME, "worker.log")
+LOG_PATH = os.path.join(NERFED_HOME, "log.jsonl")            # structured activity log (nerfed log)
+ACCOUNT_PATH = os.path.join(NERFED_HOME, "account.json")     # last seen Codex account (hash, masked label)
+HOOKS_STATUS_PATH = os.path.join(NERFED_HOME, "hooks_status.json")
+STATE_PATH = os.path.join(NERFED_HOME, "state.json")
+UNKNOWN_ACCOUNT = "unknown"
 BANK_PATH = os.path.join(PLUGIN_ROOT, "assets", "modeltrace", "unified_bank.json")
 
 PET_ID = "is-gpt-nerfed"
@@ -145,6 +150,20 @@ def tail_jsonl(path: str, n: int) -> list:
     return list(iter_jsonl(path))[-n:]
 
 
+def log_event(kind: str, level: str = "info", **fields) -> None:
+    """Append one line to the activity log. Every decision the tool makes goes through here so the whole
+    process can be reconstructed later (`nerfed log`): account switches, schedule decisions, each probe's
+    forks and verdict, passive findings, hook trust, config changes, errors."""
+    try:
+        os.makedirs(NERFED_HOME, exist_ok=True)
+        entry = {"ts": iso(), "kind": kind, "level": level, "pid": os.getpid()}
+        entry.update({k: v for k, v in fields.items() if v is not None})
+        with open(LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+    except Exception:
+        pass
+
+
 def log_error(msg: str) -> None:
     try:
         os.makedirs(NERFED_HOME, exist_ok=True)
@@ -152,6 +171,7 @@ def log_error(msg: str) -> None:
             f.write(f"{iso()} {msg}\n")
     except Exception:
         pass
+    log_event("error", level="error", message=str(msg)[:2000])
 
 
 def short(s, n: int = 8) -> str:
@@ -338,8 +358,37 @@ def current_account() -> dict:
 
 def stale_for_account(record_account: str | None, current: str) -> bool:
     """Threads are local and shared across Codex accounts, but nerfing may be per account: a verdict obtained
-    under another account says nothing about this one."""
-    return bool(record_account) and record_account != current
+    under another account (or before accounts were recorded) says nothing about this one."""
+    return record_account == UNKNOWN_ACCOUNT or (bool(record_account) and record_account != current)
+
+
+def account_state(record_account: str | None, current: str | None) -> str:
+    if record_account == UNKNOWN_ACCOUNT:
+        return "unknown"
+    if record_account and current and record_account != current:
+        return "other"
+    return "current"
+
+
+def note_account(source: str) -> dict:
+    """Remember the signed-in account and log every switch (hashes and masked labels only)."""
+    acct = current_account()
+    prev = read_json(ACCOUNT_PATH, {}) or {}
+    t = now()
+    if prev.get("id") != acct["id"]:
+        if prev.get("id"):
+            log_event("account_switch", source=source, from_id=prev.get("id"), from_label=prev.get("label"),
+                      to_id=acct["id"], to_label=acct["label"], plan=acct.get("plan"))
+            rec = {**acct, "first_seen": iso(t), "switched_at": iso(t), "switched_ts": t, "source": source,
+                   "previous": {k: prev.get(k) for k in ("id", "label", "plan")}}
+        else:
+            log_event("account_seen", source=source, id=acct["id"], label=acct["label"], plan=acct.get("plan"))
+            rec = {**acct, "first_seen": iso(t), "switched_at": None, "switched_ts": None, "source": source, "previous": None}
+    else:
+        rec = {**prev, **acct}
+    rec["last_seen"] = iso(t)
+    write_json(ACCOUNT_PATH, rec)
+    return rec
 
 
 def load_bank() -> dict:
@@ -886,6 +935,15 @@ def finalize_probe(rec: dict, outputs: list[dict], expected: str | None, errors:
                                          "verdict", "direction", "status")}
     index_row["account_id"] = (rec.get("account") or {}).get("id")
     append_jsonl(PROBES_INDEX, index_row)
+    log_event("probe_verdict", level="warn" if verdict in ("MISMATCH", "DOWNGRADED!", "SUSPICIOUS") else ("error" if verdict == "INVALID" else "info"),
+              probe=rec["id"], mode=rec.get("mode"), sid=rec.get("thread_id"), verdict=verdict, direction=direction,
+              expected=expected, prediction=top, probability=rec.get("probability"), p_expected=rec.get("p_expected"),
+              margin=rec.get("margin"), confidence=rec.get("confidence"), used_outputs=n, queries=rec.get("queries"),
+              rounds=rec.get("rounds"), retries=rec.get("retries"), waited_for_turn=rec.get("waited_for_turn"),
+              elapsed_s=rec.get("elapsed_s"), account=(rec.get("account") or {}).get("id"),
+              top=[{"model": r["model"], "p": r.get("probability"), "score": r.get("score")} for r in (rec.get("results") or [])[:3]],
+              hard_evidence=[e.get("detail") for e in hard[:3]], soft_evidence=[e.get("detail") for e in soft[:2]],
+              errors=errors[:3] or None)
     facts = [f"probe {rec['id']}  ·  thread {rec.get('thread_id') or '?'}  ·  mode {rec.get('mode')}  ·  {n}/{q} answers used"
              + (f" in {rec['rounds']} rounds" if rec.get("rounds", 1) > 1 else "") + (f"  ·  retried ×{rec['retries']}" if rec.get("retries") else "")
              + f"  ·  {rec['elapsed_s']}s",
@@ -924,6 +982,7 @@ def finalize_probe(rec: dict, outputs: list[dict], expected: str | None, errors:
                 st["alerts"] = st["alerts"][-20:]
             if cfg.get("halt_on_mismatch") and verdict in ("MISMATCH", "DOWNGRADED!"):
                 st["halt"] = {"id": rec["id"], "ts": iso(), "detail": quote}
+                log_event("halt_set", level="warn", sid=tid, probe=rec["id"], verdict=verdict)
     if verdict in ("MISMATCH", "DOWNGRADED!", "SUSPICIOUS", "INVALID", "UNLISTED") or (verdict == "MATCH" and cfg.get("notify_on_ok")):
         notify(cfg, quote, subtitle=f"verdict: {verdict}")
     if verdict == "DOWNGRADED!" or (verdict == "MISMATCH" and direction == "downgrade"):
@@ -937,14 +996,27 @@ def run_fork_probe(thread_id: str, cfg: dict, queries: int | None = None, quiet:
     if not cb:
         raise SystemExit("codex binary not found; set `nerfed config set codex_bin /path/to/codex`")
     q = max(1, min(3, int(queries or cfg.get("queries") or 3)))
+    acct = note_account("probe")
     rec = {"id": cas.new_probe_id(), "mode": "fork", "thread_id": thread_id, "started": iso(), "ts_start": now(),
-           "queries": q, "status": "running", "dgc_version": VERSION, "pid": os.getpid(), "account": current_account()}
+           "queries": q, "status": "running", "dgc_version": VERSION, "pid": os.getpid(),
+           "account": {k: acct.get(k) for k in ("id", "label", "plan")}}
     write_json(probe_path(rec["id"]), rec)
     with locked_session(thread_id) as st:
         st["probe_running"] = {"pid": os.getpid(), "ts": now(), "probe": rec["id"]}
+    log_event("probe_start", probe=rec["id"], mode="fork", sid=thread_id, queries=q, account=acct["id"],
+              parallel=bool(cfg.get("parallel", True)), languages=cfg.get("languages"))
+
+    def on_wait(reason: str) -> None:
+        rec["waited_for_turn"] = True
+        log_event("probe_wait", probe=rec["id"], sid=thread_id, reason=reason[:200])
+        with locked_session(thread_id) as st:
+            if st.get("probe_running"):
+                st["probe_running"]["note"] = "waiting for the current turn to finish"
+
     def runner():
         return cas.probe_thread(cb, thread_id, queries=q, languages=cfg.get("languages") or ["zh", "en"],
-                                timeout_s=float(cfg.get("probe_timeout_s") or 180), parallel=bool(cfg.get("parallel", True)))
+                                timeout_s=float(cfg.get("probe_timeout_s") or 180), parallel=bool(cfg.get("parallel", True)),
+                                busy_wait_s=float(cfg.get("busy_wait_s") or 600), on_wait=on_wait)
 
     outputs, errors, out = probe_round(runner, rec)
     if out:
@@ -955,12 +1027,20 @@ def run_fork_probe(thread_id: str, cfg: dict, queries: int | None = None, quiet:
         expected = row.get("model") if row else None
     if needs_confirmation(expected, outputs, cfg):  # SUSPICIOUS first round: one more round before the verdict is final
         rec["rounds"] = 2
+        log_event("probe_confirm_round", probe=rec["id"], sid=thread_id, reason="first round SUSPICIOUS")
         o2, e2, out2 = probe_round(runner, rec)
         outputs, errors = outputs + o2, errors + e2
         if out2:
             rec["forks"] = (rec.get("forks") or []) + out2["forks"]
             rec["elapsed_s"] = round(float(rec.get("elapsed_s") or 0) + out2["elapsed_s"], 1)
     return finalize_probe(rec, outputs, expected, errors, cfg, quiet=quiet)
+
+
+def fork_summary(f: dict) -> dict:
+    text = f.get("text") or ""
+    return {"id": f.get("id"), "model": f.get("model"), "effort": f.get("effort"), "tier": f.get("service_tier"),
+            "language": f.get("language"), "count": f.get("count"), "chars": len(text), "error": (f.get("error") or None),
+            "elapsed_s": f.get("elapsed_s"), "usage": f.get("usage")}
 
 
 def probe_round(runner, rec: dict) -> tuple[list[dict], list[str], dict | None]:
@@ -970,21 +1050,29 @@ def probe_round(runner, rec: dict) -> tuple[list[dict], list[str], dict | None]:
         attempt += 1
         try:
             out = runner()
+        except cas.ThreadBusy as e:
+            log_event("probe_busy", level="warn", probe=rec["id"], sid=rec.get("thread_id"), error=str(e)[:300])
+            return [], [f"thread stayed busy: {e}"], None
         except cas.AppServerError as e:
             if attempt < 2 and transport_like([str(e)]):
                 rec["retries"] = int(rec.get("retries") or 0) + 1
-                log_error(f"probe {rec['id']} transport failure, retrying: {e}")
+                log_event("probe_retry", level="warn", probe=rec["id"], sid=rec.get("thread_id"), attempt=attempt, error=str(e)[:300])
                 time.sleep(3)
                 continue
+            log_event("probe_transport_error", level="error", probe=rec["id"], sid=rec.get("thread_id"), error=str(e)[:300])
             return [], [str(e)], None
         except Exception as e:  # never leave the session locked
             log_error(f"probe {rec['id']} crashed: {e!r}")
             return [], [f"unexpected error: {e!r}"], None
         outputs = [{"text": f["text"], "expected_count": f["count"]} for f in out["forks"] if f.get("text") and not f.get("error")]
         errors = [f["error"] for f in out["forks"] if f.get("error")]
+        log_event("probe_round", probe=rec["id"], sid=rec.get("thread_id"), attempt=attempt, answers=len(outputs),
+                  fork_errors=len(errors), elapsed_s=out.get("elapsed_s"), last_turn=(out.get("thread") or {}).get("last_turn"),
+                  last_turn_status=(out.get("thread") or {}).get("last_turn_status"),
+                  forks=[fork_summary(f) for f in out.get("forks") or []])
         if not outputs and attempt < 2 and errors and transport_like(errors):
             rec["retries"] = int(rec.get("retries") or 0) + 1
-            log_error(f"probe {rec['id']} transport failure, retrying: {errors[:1]}")
+            log_event("probe_retry", level="warn", probe=rec["id"], sid=rec.get("thread_id"), attempt=attempt, error=errors[0][:300])
             time.sleep(3)
             continue
         return outputs, errors, out
@@ -1021,11 +1109,13 @@ def run_fresh_probe(cfg: dict, model: str | None = None, effort: str | None = No
     if not model:
         raise SystemExit("no default model found; pass --model")
     q = max(1, min(3, int(queries or cfg.get("queries") or 3)))
+    acct = note_account("probe")
     rec = {"id": cas.new_probe_id(), "mode": "fresh", "thread_id": None, "started": iso(), "ts_start": now(), "queries": q,
            "status": "running", "dgc_version": VERSION, "pid": os.getpid(), "requested_model": model, "requested_effort": effort,
-           "account": current_account()}
+           "account": {k: acct.get(k) for k in ("id", "label", "plan")}}
     write_json(probe_path(rec["id"]), rec)
     write_json(os.path.join(NERFED_HOME, FRESH_RUNNING), {"pid": os.getpid(), "ts": now(), "probe": rec["id"]})
+    log_event("probe_start", probe=rec["id"], mode="fresh", model=model, effort=effort, queries=q, account=acct["id"])
     expected = model
 
     def runner():
@@ -1039,6 +1129,7 @@ def run_fresh_probe(cfg: dict, model: str | None = None, effort: str | None = No
             expected = out["thread"].get("model") or model
         if needs_confirmation(expected, outputs, cfg):
             rec["rounds"] = 2
+            log_event("probe_confirm_round", probe=rec["id"], mode="fresh", reason="first round SUSPICIOUS")
             o2, e2, out2 = probe_round(runner, rec)
             outputs, errors = outputs + o2, errors + e2
             if out2:
@@ -1052,7 +1143,7 @@ def run_fresh_probe(cfg: dict, model: str | None = None, effort: str | None = No
     return finalize_probe(rec, outputs, expected, errors, cfg, quiet=quiet)
 
 
-TRANSPORT_PATTERNS = ("timed out", "exited", "transport", "app-server", "deadline", "inference failed", "connection",
+TRANSPORT_PATTERNS = ("stayed busy", "in-progress turn", "timed out", "exited", "transport", "app-server", "deadline", "inference failed", "connection",
                       "network", "unexpected error", "no usable answer")
 
 
@@ -1188,6 +1279,7 @@ def cmd_probe_now(args) -> int:
                 row = db_recent_main_thread(os.getcwd(), exclude=tid)
                 parent = row["id"] if row else None
         return start_self_probe(parent, side_id, cfg, expected_model_for(parent or tid))
+    log_event("probe_requested", sid=tid, via=how, mode=mode, sandboxed=os.environ.get("CODEX_SANDBOX_NETWORK_DISABLED") == "1")
     if os.environ.get("CODEX_SANDBOX_NETWORK_DISABLED") == "1" and not args.force:
         with locked_session(tid) as st:
             st["requested"] = True
@@ -1244,6 +1336,7 @@ def deliver_alerts(st: dict, out: dict, model_visible: bool, cfg: dict) -> None:
         hso["additionalContext"] = (hso.get("additionalContext", "") + "\n" if hso.get("additionalContext") else "") + ctx
         for a in pending:
             a["delivered"] = True
+        log_event("alert_delivered", sid=st.get("sid"), probes=[a.get("probe") for a in pending], verdicts=[a.get("verdict") for a in pending])
 
 
 def cmd_hook(args) -> int:
@@ -1265,6 +1358,7 @@ def cmd_hook(args) -> int:
         return 0
     cfg = load_config()
     ensure_dirs()
+    acct = note_account("hook")
     log = {"ts": iso(), "event": ev, "sid": sid, "cwd": payload.get("cwd"), "model": payload.get("model"),
            "turn_id": payload.get("turn_id"), "transcript_path": payload.get("transcript_path"), "keys": sorted(payload.keys())}
     if ev == "UserPromptSubmit":
@@ -1277,12 +1371,15 @@ def cmd_hook(args) -> int:
     with locked_session(sid) as st:
         st["hook_events"] = int(st.get("hook_events") or 0) + 1
         if not st.get("account_id") or ev == "SessionStart":
-            st["account_id"] = current_account()["id"]
+            st["account_id"] = acct["id"]
         for k in ("cwd", "model", "transcript_path"):
             if payload.get(k):
                 st[k] = payload[k]
         if st["kind"] in ("unknown", "side") or ev == "SessionStart":
             link_session(st)
+        if ev == "SessionStart":
+            log_event("session_start", sid=sid, kind=st.get("kind"), model=payload.get("model"), cwd=payload.get("cwd"),
+                      source=payload.get("source"), account=acct["id"])
         if ev == "UserPromptSubmit":
             st["turns"] = int(st.get("turns") or 0) + 1
             deliver_alerts(st, out, True, cfg)
@@ -1292,6 +1389,7 @@ def cmd_hook(args) -> int:
             if cfg.get("halt_on_mismatch") and st.get("halt") and not is_dgc_command(payload):
                 reason = (f"is-gpt-nerfed halt: {st['halt'].get('detail')} Work tools are blocked until the user explicitly asks to "
                           f"resume; then run `{DGC_BIN} resume --thread {sid}`.")
+                log_event("halt_block", sid=sid, tool=payload.get("tool_name"), command=tool_command_preview(payload)[:120], probe=st["halt"].get("id"))
                 out.update({"decision": "deny", "reason": reason,
                             "hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason},
                             "systemMessage": f"🐾 {cfg.get('pet_name')}: halted this thread after a mismatch (halt_on_mismatch=true)."})
@@ -1302,6 +1400,8 @@ def cmd_hook(args) -> int:
             if cfg.get("passive", True) and st.get("transcript_path") and os.path.exists(st["transcript_path"]):
                 for e in scan_rollout(st["transcript_path"], st["scan"], hidden_models()):
                     st["evidence"].append(e)
+                    log_event("scan_finding", level="warn" if e["severity"] in ("hard", "soft") else "info", sid=sid,
+                              severity=e["severity"], finding=e["kind"], detail=e["detail"], turn=e.get("turn_id"))
                     if e["severity"] == "hard":
                         messages.append(pet_line("DOWNGRADED_HARD", seed=e["detail"], detail=e["detail"]))
                         play_sound(cfg)
@@ -1310,16 +1410,22 @@ def cmd_hook(args) -> int:
             running = st.get("probe_running")
             if running and not pid_alive(running.get("pid")):
                 st["probe_running"] = running = None
-            if st["kind"] == "main" and not running and (st.get("requested") or probe_due(st, cfg)):
+            if st["kind"] == "main" and not running and (st.get("requested") or probe_due(st, cfg, acct["id"])):
+                kind, n = parse_frequency(cfg.get("frequency"))
+                switched = stale_for_account(st.get("last_probe_account"), acct["id"]) and st.get("probes")
+                why = ("requested" if st.get("requested") else "account changed since the last probe" if switched
+                       else f"{st['turns'] - int(st.get('last_probe_turn') or 0)} turns since the last probe" if kind == "turns"
+                       else f"{n} min elapsed")
+                log_event("probe_due", sid=sid, why=why, mode=cfg.get("mode"), turns=st["turns"], account=acct["id"])
                 if cfg.get("mode") == "auto":
                     if spawn_worker(sid, cfg):
                         st["probe_running"] = {"pid": None, "ts": now(), "probe": "spawning"}
                         st["last_probe_turn"], st["last_probe_ts"], st["requested"] = st["turns"], now(), False
+                        log_event("worker_spawn", sid=sid, why=why)
                 else:
                     st["last_nudge_turn"], st["last_nudge_ts"] = st["turns"], now()
-                    kind, n = parse_frequency(cfg.get("frequency"))
-                    why = f"{st['turns'] - int(st.get('last_probe_turn') or 0)} turns since the last probe" if kind == "turns" else f"{n} min elapsed"
                     messages.append(pet_line("NUDGE", why=why, cmd=SKILL_CMD, side=SIDE_CMD))
+                    log_event("nudge", sid=sid, why=why)
             if messages:
                 out["systemMessage"] = f"🐾 {cfg.get('pet_name') or 'Codex Pet'}: " + "\n".join(messages)
                 notify(cfg, messages[0], subtitle="is-gpt-nerfed")
@@ -1337,6 +1443,7 @@ def cmd_resume(args) -> int:
         raise SystemExit("pass --thread <id>")
     with locked_session(tid) as st:
         st["halt"] = None
+    log_event("halt_cleared", sid=tid)
     print(f"halt cleared for thread {tid}")
     return 0
 
@@ -1395,6 +1502,7 @@ def probe_summary(row: dict, current: str | None = None) -> dict:
     account_id = row.get("account_id") or (full.get("account") or {}).get("id")
     return {
         "account_id": account_id, "stale_account": stale_for_account(account_id, current) if current else False,
+        "account_state": account_state(account_id, current),
         "id": row["id"], "thread_id": row.get("thread_id"), "mode": row.get("mode"), "status": status,
         "finished": row.get("finished"), "finished_ts": finished_ts, "finished_ago": ago(finished_ts),
         "verdict": verdict, "direction": row.get("direction"), "expected": row.get("expected"), "prediction": row.get("prediction"),
@@ -1450,7 +1558,10 @@ def demo_snapshot(cfg: dict) -> dict:
     recent += [probe(f"r{i}", "pg17", "MATCH", expected="gpt-5.6-sol", pred="gpt-5.6-sol", p=1.0, ago_s=7200 + i * 3600) for i in range(5)]
     return {"generated": iso(), "version": VERSION, "nerfed_bin": DGC_BIN, "ledger": "~/.codex/is-gpt-nerfed", "config": cfg,
             "hooks_last_event": iso(t0 - 12), "hooks_last_event_ago": "12s ago",
-            "account": {"label": "y…@example.com", "plan": "plus"},
+            "hooks": {"checked": iso(t0 - 300), "checked_ago": "5m ago", "total": 5, "trusted": 5, "untrusted": 0, "state": "trusted",
+                      "error": None, "last_desktop_event": iso(t0 - 12), "last_desktop_event_ago": "12s ago", "desktop_loaded": True},
+            "account": {"label": "y…@example.com", "plan": "plus", "switched_at": iso(t0 - 2700), "switched_ago": "45m ago",
+                        "previous_label": "o…@example.com"},
             "overall": {"status": "alert", "downgraded": 1, "suspicious": 1, "unverified": 1, "running": 0,
                         "message": "1 thread downgraded · 1 suspicious · 1 unverified"},
             "default_model": "gpt-6-astra", "default_effort": "high", "global_probe": fresh, "global_running": False, "global_alert": False,
@@ -1458,29 +1569,42 @@ def demo_snapshot(cfg: dict) -> dict:
 
 
 def migrate_untagged_records(account_id: str) -> None:
-    """Records made before account tagging existed belong to whoever is signed in now (runs once)."""
+    """Records made before accounts were recorded cannot be attributed to any account, so they are marked
+    `unknown` and count as unverified. (v1 of this migration wrongly gave them to whoever was signed in when it
+    ran, which hid an account switch; v2 undoes that. Runs once.)"""
     marker = os.path.join(NERFED_HOME, ".accounts-migrated")
-    if os.path.exists(marker) or not os.path.exists(PROBES_INDEX):
+    version = ""
+    if os.path.exists(marker):
+        with open(marker, "r", encoding="utf-8") as f:
+            version = f.read().strip()
+    if version.startswith("v2"):
         return
-    rows = list(iter_jsonl(PROBES_INDEX))
-    if rows and any(not r.get("account_id") for r in rows):
-        tmp = PROBES_INDEX + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            for r in rows:
-                r.setdefault("account_id", account_id)
-                f.write(json.dumps(r, ensure_ascii=False) + "\n")
-        os.replace(tmp, PROBES_INDEX)
+    changed = 0
+    if os.path.exists(PROBES_INDEX):
+        rows = list(iter_jsonl(PROBES_INDEX))
         for r in rows:
-            rec = read_json(probe_path(r["id"]))
-            if rec and not rec.get("account"):
-                rec["account"] = {"id": account_id, "label": "", "plan": None}
-                write_json(probe_path(r["id"]), rec)
+            rec = read_json(probe_path(r["id"]), {}) or {}
+            acc = rec.get("account") or {}
+            v1_tagged = bool(acc.get("id")) and acc.get("label") == "" and acc.get("plan") is None
+            if not r.get("account_id") or v1_tagged:
+                r["account_id"] = UNKNOWN_ACCOUNT
+                changed += 1
+                if rec:
+                    rec["account"] = {"id": UNKNOWN_ACCOUNT, "label": "", "plan": None, "note": "recorded before accounts were tracked"}
+                    write_json(probe_path(r["id"]), rec)
+        if changed:
+            tmp = PROBES_INDEX + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                for r in rows:
+                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
+            os.replace(tmp, PROBES_INDEX)
     for st in all_sessions():
-        if not st.get("account_id"):
-            st["account_id"] = account_id
+        if st.get("probes") and not st.get("last_probe_account"):
+            st["last_probe_account"] = UNKNOWN_ACCOUNT
             save_session(st)
     with open(marker, "w") as f:
-        f.write(iso() + "\n")
+        f.write("v2 " + iso() + "\n")
+    log_event("migration", version="v2-accounts", records_marked_unknown=changed, current_account=account_id)
 
 
 def cmd_snapshot(args) -> int:
@@ -1491,7 +1615,7 @@ def cmd_snapshot(args) -> int:
     if getattr(args, "demo", False):
         print(json.dumps(demo_snapshot(cfg), ensure_ascii=False, indent=2 if getattr(args, "pretty", False) else None))
         return 0
-    acct = current_account()
+    acct = note_account("snapshot")
     migrate_untagged_records(acct["id"])
     horizon = float(getattr(args, "hours", 48) or 48) * 3600
     cutoff = now() - horizon
@@ -1522,6 +1646,7 @@ def cmd_snapshot(args) -> int:
         t["due"] = probe_due(st, cfg, acct["id"])
         running = st.get("probe_running") or {}
         t["probe_running"] = bool(running) and (running.get("pid") is None or pid_alive(running.get("pid")))
+        t["_probe_note"] = (running or {}).get("note") if t["probe_running"] else None
         t["halted"] = bool(st.get("halt"))
         t["requested"] = bool(st.get("requested"))
         evs = st.get("evidence") or []
@@ -1576,15 +1701,122 @@ def cmd_snapshot(args) -> int:
         parts.append(f"{running} probe{'s' if running > 1 else ''} running")
     message = " · ".join(parts) if parts else ("all clear" if (out_threads or global_probe) else "no active threads")
     status = "alert" if downgraded else ("warn" if suspicious else ("unverified" if unverified else "ok"))
+    for t in out_threads:  # surface the worker's progress note (e.g. waiting for a live turn to finish)
+        t["probe_note"] = t.pop("_probe_note", None)
+    hooks = hooks_status(cfg)
+    state = read_json(STATE_PATH, {}) or {}
+    if state.get("last_status") != status or state.get("last_message") != message:
+        log_event("status_change", level="warn" if status in ("alert", "warn") else "info", from_status=state.get("last_status"),
+                  to_status=status, message=message, downgraded=downgraded, suspicious=suspicious, unverified=unverified)
+        write_json(STATE_PATH, {**state, "last_status": status, "last_message": message, "changed_at": iso()})
     snap = {"generated": iso(), "version": VERSION, "nerfed_bin": DGC_BIN, "ledger": NERFED_HOME, "config": cfg,
             "hooks_last_event": (last_event or {}).get("ts"), "hooks_last_event_ago": ago(parse_iso((last_event or {}).get("ts"))),
+            "hooks": hooks,
             "overall": {"status": status, "downgraded": downgraded, "suspicious": suspicious, "unverified": unverified,
                         "running": running, "message": message},
             "default_model": default_model, "default_effort": default_effort,
             "global_probe": global_probe, "global_running": bool(fr), "global_alert": global_alert,
-            "account": {"label": acct["label"], "plan": acct["plan"]},
+            "account": {"label": acct["label"], "plan": acct["plan"], "switched_at": acct.get("switched_at"),
+                        "switched_ago": ago(acct.get("switched_ts")) if acct.get("switched_ts") else None,
+                        "previous_label": (acct.get("previous") or {}).get("label")},
             "threads": out_threads, "recent_probes": [probe_summary(r, acct["id"]) for r in index_rows[-10:]][::-1]}
     print(json.dumps(snap, ensure_ascii=False, indent=2 if getattr(args, "pretty", False) else None))
+    return 0
+
+
+def hooks_status(cfg: dict, max_age_s: float = 900, force: bool = False) -> dict:
+    """Trust state of the plugin's hooks as Codex sees them (hooks/list), cached for `max_age_s`, plus whether
+    the desktop app has ever fired one of them (a hook event whose thread was created by Codex Desktop)."""
+    cached = read_json(HOOKS_STATUS_PATH, {}) or {}
+    fresh = cached.get("checked_ts") and (now() - float(cached["checked_ts"])) < max_age_s
+    if force or not fresh:
+        cb = codex_bin(cfg)
+        if cb:
+            try:
+                hooks = cas.list_plugin_hooks(cb, f"{PLUGIN_NAME}@{MARKETPLACE_NAME}")
+                trusted = sum(1 for h in hooks if h.get("trustStatus") == "trusted")
+                cached = {"checked_ts": now(), "checked": iso(), "total": len(hooks), "trusted": trusted, "untrusted": len(hooks) - trusted,
+                          "hooks": [{"event": h.get("eventName"), "status": h.get("trustStatus"), "key": h.get("key"), "hash": h.get("currentHash")} for h in hooks],
+                          "error": None}
+                cached["state"] = "missing" if not hooks else ("trusted" if trusted == len(hooks) else "untrusted")
+            except Exception as e:
+                cached = {**cached, "checked_ts": now(), "checked": iso(), "error": str(e)[:200], "state": cached.get("state") or "unknown"}
+            write_json(HOOKS_STATUS_PATH, cached)
+    # desktop evidence: hook events whose thread the Codex Desktop app created
+    last_desktop = None
+    sids = {}
+    for e in tail_jsonl(EVENTS_PATH, 400):
+        if e.get("sid"):
+            sids[e["sid"]] = e.get("ts")
+    if sids:
+        marks = ",".join("?" for _ in sids)
+        rows = db_query(f"SELECT id, originator FROM threads WHERE id IN ({marks})", tuple(sids))
+        desk = [sids[r["id"]] for r in rows if (r.get("originator") or "").startswith("Codex Desktop") and sids.get(r["id"])]
+        last_desktop = max(desk) if desk else None
+    out = {k: cached.get(k) for k in ("checked", "total", "trusted", "untrusted", "state", "error")}
+    out["checked_ago"] = ago(cached.get("checked_ts"))
+    out["last_desktop_event"] = last_desktop
+    out["last_desktop_event_ago"] = ago(parse_iso(last_desktop)) if last_desktop else None
+    out["desktop_loaded"] = bool(last_desktop)
+    return out
+
+
+def cmd_hooks(args) -> int:
+    cfg = load_config()
+    ensure_dirs()
+    cb = codex_bin(cfg)
+    if not cb:
+        raise SystemExit("codex binary not found")
+    plugin_id = f"{PLUGIN_NAME}@{MARKETPLACE_NAME}"
+    hooks = cas.list_plugin_hooks(cb, plugin_id)
+    if args.action == "trust":
+        pending = [h for h in hooks if h.get("trustStatus") != "trusted"]
+        if not pending:
+            print(f"all {len(hooks)} hooks already trusted")
+        else:
+            r = cas.trust_hooks(cb, pending)
+            log_event("hooks_trust", count=len(pending), events=[h.get("eventName") for h in pending], result=(r or {}).get("status"))
+            print(f"trusted {len(pending)} hook(s): " + ", ".join(h.get("eventName") or "?" for h in pending))
+            hooks = cas.list_plugin_hooks(cb, plugin_id)
+    st = hooks_status(cfg, force=True)
+    print(f"{plugin_id}: {st.get('trusted', 0)}/{st.get('total', 0)} hooks trusted  ·  desktop has fired them: "
+          f"{'yes, last ' + st['last_desktop_event_ago'] if st.get('desktop_loaded') else 'not yet (restart the Codex app after installing)'}")
+    for h in hooks:
+        print(f"  {h.get('eventName'):18} {h.get('trustStatus'):10} {h.get('currentHash')}")
+    if st.get("untrusted"):
+        print(f"→ `{DGC_BIN} hooks trust` records trust for the hook definitions above (what /hooks does in the Codex TUI).")
+    return 0 if not st.get("untrusted") else 1
+
+
+def cmd_log(args) -> int:
+    rows = list(iter_jsonl(LOG_PATH))
+    if args.since:
+        m = re.match(r"^(\d+)\s*([smhd])$", args.since.strip().lower())
+        if not m:
+            raise SystemExit("--since expects e.g. 30m, 2h, 1d")
+        secs = int(m.group(1)) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
+        cutoff = iso(now() - secs)
+        rows = [r for r in rows if (r.get("ts") or "") >= cutoff]
+    if args.kind:
+        kinds = {k.strip() for k in args.kind.split(",")}
+        rows = [r for r in rows if r.get("kind") in kinds]
+    if args.probe:
+        rows = [r for r in rows if r.get("probe") == args.probe]
+    if args.thread:
+        rows = [r for r in rows if (r.get("sid") or "").startswith(args.thread)]
+    rows = rows[-int(args.last):] if args.last else rows
+    if not rows:
+        print(f"no matching log entries in {LOG_PATH}")
+        return 0
+    for r in rows:
+        if args.json:
+            print(json.dumps(r, ensure_ascii=False))
+            continue
+        rest = {k: v for k, v in r.items() if k not in ("ts", "kind", "level", "pid")}
+        if "forks" in rest:
+            rest["forks"] = f"[{len(rest['forks'])} forks]"
+        body = " ".join(f"{k}={json.dumps(v, ensure_ascii=False) if not isinstance(v, str) else v}" for k, v in rest.items())
+        print(f"{r.get('ts')}  {r.get('level', 'info'):5}  {r.get('kind'):22} {body[:400]}")
     return 0
 
 
@@ -1787,6 +2019,7 @@ def cmd_config(args) -> int:
         cfg[args.key] = coerce_config_value(args.key, args.value)
         ensure_dirs()
         save_config(cfg)
+        log_event("config_set", key=args.key, value=cfg[args.key])
         print(f"{args.key} = {json.dumps(cfg[args.key])}")
         return 0
     raise SystemExit("usage: nerfed config [show|get <key>|set <key> <value>|init]")
@@ -1923,6 +2156,31 @@ def cmd_setup(args) -> int:
         cmd_pet(argparse.Namespace(action="install", text=[], verdict=None))
     except SystemExit as e:
         print(f"pet install skipped: {e}")
+    log_event("setup", plugin_root=PLUGIN_ROOT, via_cli=ok_cli)
+    # Hook trust: Codex skips hooks it has not been told to trust (the /hooks screen in the TUI). Offer to record it.
+    if cb and not getattr(args, "no_trust", False):
+        try:
+            hooks = cas.list_plugin_hooks(cb, f"{PLUGIN_NAME}@{MARKETPLACE_NAME}")
+        except Exception as e:
+            hooks = []
+            print(f"could not list hooks: {e}")
+        pending = [h for h in hooks if h.get("trustStatus") != "trusted"]
+        if pending:
+            print(f"\n{len(pending)} hook(s) need trust before Codex will run them:")
+            for h in pending:
+                print(f"  {h.get('eventName'):18} {h.get('command')}")
+            yes = bool(getattr(args, "trust_hooks", False))
+            if not yes and sys.stdin.isatty():
+                yes = input("Trust these hooks now? [y/N] ").strip().lower() in ("y", "yes")
+            if yes:
+                cas.trust_hooks(cb, pending)
+                log_event("hooks_trust", count=len(pending), events=[h.get("eventName") for h in pending], source="setup")
+                print("trusted.")
+            else:
+                print(f"skipped; run `{DGC_BIN} hooks trust` later (or /hooks in the Codex TUI).")
+        elif hooks:
+            print(f"\nall {len(hooks)} hooks already trusted")
+        hooks_status(cfg, force=True)
     print()
     return cmd_doctor(args)
 
@@ -1945,6 +2203,7 @@ def cmd_teardown(args) -> int:
     if args.purge:
         shutil.rmtree(NERFED_HOME, ignore_errors=True)
         print(f"purged {NERFED_HOME}")
+    log_event("teardown", purge=bool(getattr(args, "purge", False)))
     print("done. Restart the Codex app to drop the hooks.")
     return 0
 
@@ -1989,10 +2248,21 @@ def cmd_doctor(args) -> int:
     check(plugin_enabled_in_config(), f'[plugins."{PLUGIN_NAME}@…"] enabled = true in config.toml', "run ./install.sh")
     check(not re.search(r"\[features\][^\[]*hooks\s*=\s*false", text), "hooks feature not disabled in config.toml")
     check(os.path.exists(os.path.join(pet_dst_dir(), "pet.json")), f"pet installed at {pet_dst_dir()}", "nerfed pet install")
+    hs = hooks_status(cfg, force=bool(getattr(args, "live", False)))
+    if hs.get("state") == "trusted":
+        check(True, f"hooks trusted by Codex ({hs.get('trusted')}/{hs.get('total')}, checked {hs.get('checked_ago')})")
+    elif hs.get("state") == "untrusted":
+        check(False, f"hooks not trusted ({hs.get('trusted')}/{hs.get('total')})", f"run `{DGC_BIN} hooks trust`")
+    elif hs.get("state") == "missing":
+        check(False, "Codex does not list this plugin's hooks", "run ./install.sh, then restart the Codex app")
+    else:
+        print(f"  ⚠️  hook trust unknown ({hs.get('error') or 'not checked yet'})")
     evs = tail_jsonl(EVENTS_PATH, 1)
     recent = bool(evs) and evs[0].get("ts", "") >= iso(now() - 48 * 3600)
     print(f"  {'✅' if recent else '⚠️ '} hook events seen: {evs[0]['ts'] + ' ' + evs[0]['event'] if evs else 'none yet'}"
           + ("" if recent else "  → restart the Codex app, send any message, then re-run doctor"))
+    print(f"  {'✅' if hs.get('desktop_loaded') else '⚠️ '} Codex Desktop has fired these hooks: "
+          + (f"yes, last {hs.get('last_desktop_event_ago')}" if hs.get("desktop_loaded") else "not yet  → the desktop app loads plugins and hook trust at start: quit and reopen it"))
     try:
         parse_frequency(cfg.get("frequency"))
         check(True, f"frequency {cfg.get('frequency')!r}, mode {cfg.get('mode')!r}, queries {cfg.get('queries')}")
@@ -2186,6 +2456,17 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_audit)
     s = sub.add_parser("status", help="config + recently seen sessions")
     s.set_defaults(fn=cmd_status)
+    s = sub.add_parser("hooks", help="status | trust — trust state of the plugin's hooks as Codex sees them")
+    s.add_argument("action", nargs="?", choices=["status", "trust"], default="status")
+    s.set_defaults(fn=cmd_hooks)
+    s = sub.add_parser("log", help="activity log: account switches, schedule decisions, probes, findings, errors")
+    s.add_argument("--last", type=int, default=40)
+    s.add_argument("--since", help="e.g. 30m, 2h, 1d")
+    s.add_argument("--kind", help="comma-separated kinds, e.g. probe_verdict,account_switch")
+    s.add_argument("--probe")
+    s.add_argument("--thread")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_log)
     s = sub.add_parser("snapshot", help="JSON feed for the menu-bar app: threads, latest probes, config")
     s.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
     s.add_argument("--pretty", action="store_true")
@@ -2204,6 +2485,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_pet)
     s = sub.add_parser("setup", help="register the plugin with Codex (used by install.sh)")
     s.add_argument("--no-cli", action="store_true", help="skip `codex plugin …` and edit config.toml directly")
+    s.add_argument("--trust-hooks", action="store_true", help="record trust for the plugin's hooks without asking")
+    s.add_argument("--no-trust", action="store_true", help="do not touch hook trust")
     s.add_argument("--fork", action="store_true", help=argparse.SUPPRESS)
     s.add_argument("--thread", help=argparse.SUPPRESS)
     s.set_defaults(fn=cmd_setup)
@@ -2212,6 +2495,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_teardown)
     s = sub.add_parser("doctor", help="check the installation; --fork also creates a real ephemeral fork (no inference)")
     s.add_argument("--fork", action="store_true")
+    s.add_argument("--live", action="store_true", help="re-query hook trust instead of using the cached answer")
     s.add_argument("--thread")
     s.add_argument("--no-cli", action="store_true", help=argparse.SUPPRESS)
     s.set_defaults(fn=cmd_doctor)

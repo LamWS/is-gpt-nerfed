@@ -4,11 +4,12 @@ import Foundation
 struct Snapshot: Codable {
     var generated: String
     var version: String
-    var dgcBin: String?
+    var nerfedBin: String?
     var ledger: String?
     var config: DGCConfig
     var hooksLastEvent: String?
     var hooksLastEventAgo: String?
+    var hooks: HooksInfo?
     var overall: Overall
     var defaultModel: String?
     var defaultEffort: String?
@@ -24,6 +25,23 @@ struct Snapshot: Codable {
 struct AccountInfo: Codable {
     var label: String?
     var plan: String?
+    var switchedAt: String?
+    var switchedAgo: String?
+    var previousLabel: String?
+}
+
+/// Trust state of the plugin's hooks as Codex reports it, and whether the desktop app has ever fired them.
+struct HooksInfo: Codable {
+    var checked: String?
+    var checkedAgo: String?
+    var total: Int?
+    var trusted: Int?
+    var untrusted: Int?
+    var state: String?          // trusted | untrusted | missing | unknown
+    var error: String?
+    var lastDesktopEvent: String?
+    var lastDesktopEventAgo: String?
+    var desktopLoaded: Bool?
 }
 
 struct Overall: Codable {
@@ -68,6 +86,7 @@ struct ThreadInfo: Codable, Identifiable {
     var turnsSinceProbe: Int
     var due: Bool
     var probeRunning: Bool
+    var probeNote: String?
     var halted: Bool
     var requested: Bool
     var hardEvidence: Int
@@ -100,6 +119,7 @@ struct ProbeSummary: Codable, Identifiable {
     var isDowngrade: Bool?
     var isSuspicious: Bool?
     var staleAccount: Bool?
+    var accountState: String?   // current | other | unknown
     var retryable: Bool?
     var retries: Int?
 

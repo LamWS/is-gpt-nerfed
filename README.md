@@ -81,8 +81,12 @@ only the system `python3`; the codex binary is found on `PATH` or inside the Cha
 
 Then:
 
-1. Restart the Codex app (plugins load on start).
-2. Trust the plugin's hooks once: Codex CLI → `/hooks` → is-gpt-nerfed → trust; the desktop app asks in the plugin's settings.
+1. Let the installer trust the plugin's hooks when it asks (`./install.sh --trust-hooks` to skip the question). Codex
+   never runs a hook it has not been told to trust: trust is recorded per hook definition hash under `[hooks.state]`
+   in `~/.codex/config.toml`, through the same `config/batchWrite` call the Codex TUI's `/hooks` screen makes.
+   `nerfed hooks status` shows the state; `nerfed hooks trust` records it later.
+2. Quit and reopen the Codex app. The desktop app reads plugins and hook trust when it starts; until then the panel
+   says "Codex app has not loaded the plugin yet" and no hook fires in your threads.
 3. In any thread say `$is-gpt-nerfed`, or `/side $is-gpt-nerfed` to keep it out of your context.
 
 From another machine, `codex plugin marketplace add <owner>/is-gpt-nerfed` then `codex plugin add is-gpt-nerfed@is-gpt-nerfed`
@@ -96,7 +100,8 @@ Uninstall: `./uninstall.sh` (add `--purge` to delete the local ledger). Codex ca
 `macos/` contains a native SwiftUI menu bar app: a paw in the menu bar that turns **red** whenever any thread
 (or the last fresh-session probe) is downgraded, and a Liquid Glass panel with:
 
-- the pet's overall status and whether hooks are alive;
+- the pet's overall status, the signed-in account (and when it last changed), and whether Codex trusts and actually
+  runs the hooks (orange until it does);
 - **Fresh session**: a global probe that starts brand-new ephemeral sessions with your default model (no thread
   context) and fingerprints what a new session gets right now;
 - **Active threads** (last 48 h, subagents excluded) with model, turns, last activity, the latest probe's verdict
@@ -116,9 +121,23 @@ and `nerfed resume`. Probes that fail on transport are retried once automaticall
 Thread titles come straight from Codex's state DB, so renaming a thread in Codex shows up on the next refresh.
 
 **Accounts.** Threads are local and shared across Codex accounts, but nerfing may well be per account, so every
-probe is tagged with a hash of the signed-in account (from `~/.codex/auth.json`; the raw id is never stored). After
-you switch accounts, earlier verdicts are shown dimmed as "another account, unverified", the overall status stops
-saying all clear, and each such thread is re-probed the next time it is active.
+probe is tagged with a hash of the signed-in account (from `~/.codex/auth.json`; the raw id is never stored) and every
+account switch is logged. After you switch, earlier verdicts are shown dimmed as "another account", the overall status
+says "N unverified" instead of all clear, and each such thread is re-probed the next time it is active. Records from
+before accounts were tracked are marked "account unknown" and treated the same way.
+
+**Busy threads.** A thread with a turn in progress cannot be forked at that turn. The probe forks at the previous
+finished turn instead; if nothing is forkable yet it waits (up to `busy_wait_s`, default 600 s, shown in the panel as
+"waiting for the current turn to finish") and gives up with a retryable Invalid after that.
+
+**Logging.** Everything the tool decides is appended to `~/.codex/is-gpt-nerfed/log.jsonl`, one JSON object per line:
+account switches (`account_switch`), schedule decisions (`probe_due`, `worker_spawn`, `nudge`), every probe's forks
+with model/effort/tier/timing/usage (`probe_start`, `probe_round`, `probe_wait`, `probe_retry`, `probe_confirm_round`,
+`probe_verdict` with the full candidate list), passive findings (`scan_finding`), hook trust (`hooks_trust`), config
+changes, status changes and errors. Read it with `nerfed log [--since 2h] [--kind probe_verdict,account_switch]
+[--probe id] [--thread id] [--json]`. Raw hook payload metadata stays in `events.jsonl`, full probe records (including
+every fork's answer text) in `probes/*.json`. The menu bar app also logs to the unified log (Console.app, subsystem
+`is-gpt-nerfed`).
 `IsGPTNerfed --render out.png` writes self-portraits of the panel (add `NERFED_DEMO=1` for the sample data shown above).
 
 ## Using it

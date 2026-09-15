@@ -8,6 +8,10 @@ controlled by environment variables:
   FAKE_CODEX_TOOL=1       the probe "tries a tool" (item/started commandExecution) → must be rejected
   FAKE_CODEX_FAIL=1       the turn ends with status failed
   FAKE_CODEX_APPROVAL=1   the server sends an approval request during the turn
+  FAKE_CODEX_FAIL_ONCE=p  exit before answering while file p exists (deleted on first hit): one transport failure
+  FAKE_CODEX_BUSY_MODE    "fallback": newest turn is live (fork refused), the previous finished turn works
+                          "wait": the only turn is live while FAKE_CODEX_BUSY_UNTIL exists; finished afterwards
+  FAKE_CODEX_TRUST_FILE=p JSON file holding trusted hook hashes; enables hooks/list + config/batchWrite
   FAKE_CODEX_LOG=path     append every received message here
 """
 import json
@@ -18,6 +22,7 @@ import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURE = os.path.join(HERE, "fixtures", "reference_subset.jsonl")
+HOOK_EVENTS = ["preToolUse", "sessionStart", "sessionEnd", "userPromptSubmit", "stop"]
 
 
 def texts_for(model):
@@ -33,6 +38,32 @@ def texts_for(model):
 def send(obj):
     sys.stdout.write(json.dumps(obj) + "\n")
     sys.stdout.flush()
+
+
+def busy_now():
+    mode = os.environ.get("FAKE_CODEX_BUSY_MODE")
+    if mode == "fallback":
+        return True
+    if mode == "wait":
+        p = os.environ.get("FAKE_CODEX_BUSY_UNTIL")
+        return bool(p and os.path.exists(p))
+    return False
+
+
+def turns():
+    mode = os.environ.get("FAKE_CODEX_BUSY_MODE")
+    if mode == "fallback":
+        return [{"id": "turn-live", "status": "completed"}, {"id": "turn-prev", "status": "completed"}]  # listed status lags: live turn shows as completed
+    if mode == "wait":
+        return [{"id": "turn-only", "status": "inProgress" if busy_now() else "completed"}]
+    return [{"id": "turn-last", "status": "completed"}]
+
+
+def trusted_hashes():
+    p = os.environ.get("FAKE_CODEX_TRUST_FILE")
+    if not p or not os.path.exists(p):
+        return set()
+    return set(json.load(open(p)))
 
 
 def main():
@@ -68,8 +99,13 @@ def main():
                                                        "model": thread_model, "modelProvider": "openai", "reasoningEffort": "high",
                                                        "cwd": "/tmp/fake-project", "name": "fake thread"}}})
         elif method == "thread/turns/list":
-            send({"id": rid, "result": {"data": [{"id": "turn-last", "status": "completed"}], "nextCursor": None}})
+            send({"id": rid, "result": {"data": turns(), "nextCursor": None}})
         elif method == "thread/fork":
+            last = params.get("lastTurnId")
+            if (os.environ.get("FAKE_CODEX_BUSY_MODE") == "fallback" and last == "turn-live") or \
+                    (os.environ.get("FAKE_CODEX_BUSY_MODE") == "wait" and busy_now()):
+                send({"id": rid, "error": {"code": -32000, "message": f"lastTurnId '{last}' identifies an in-progress turn"}})
+                continue
             fid = "ephemeral-" + uuid.uuid4().hex[:8]
             forks[fid] = params
             send({"id": rid, "result": {"thread": {"id": fid, "ephemeral": True, "forkedFromId": params["threadId"], "cwd": params.get("cwd"),
@@ -100,6 +136,23 @@ def main():
             send({"method": "turn/completed", "params": {"threadId": fid, "turn": {"id": turn_id, "status": status}}})
         elif method == "turn/interrupt":
             send({"id": rid, "result": {}})
+        elif method == "hooks/list" and os.environ.get("FAKE_CODEX_TRUST_FILE"):
+            trusted = trusted_hashes()
+            hooks = []
+            for i, ev in enumerate(HOOK_EVENTS):
+                h = f"sha256:fake-{ev}"
+                hooks.append({"key": f"is-gpt-nerfed@is-gpt-nerfed:plugin.json#hooks[0]:{ev}:0:0", "eventName": ev, "handlerType": "command",
+                              "command": f"nerfed hook --event {ev}", "pluginId": "is-gpt-nerfed@is-gpt-nerfed", "source": "plugin",
+                              "enabled": True, "currentHash": h, "trustStatus": "trusted" if h in trusted else "untrusted", "displayOrder": i})
+            send({"id": rid, "result": {"data": [{"cwd": "/tmp/fake-project", "hooks": hooks}]}})
+        elif method == "config/batchWrite" and os.environ.get("FAKE_CODEX_TRUST_FILE"):
+            trusted = trusted_hashes()
+            for e in params.get("edits") or []:
+                if e.get("keyPath", "").startswith("hooks.state.") and isinstance(e.get("value"), dict):
+                    trusted.add(e["value"].get("trusted_hash"))
+            with open(os.environ["FAKE_CODEX_TRUST_FILE"], "w") as f:
+                json.dump(sorted(trusted), f)
+            send({"id": rid, "result": {"status": "ok", "version": "sha256:fake", "filePath": "/tmp/fake-config.toml"}})
         elif rid is not None and method is None:
             pass  # reply to our own server request
         elif rid is not None:

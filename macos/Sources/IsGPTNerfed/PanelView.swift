@@ -66,8 +66,10 @@ struct VerdictLine: View {
             Text(probe.detail).foregroundStyle(stale ? .tertiary : .secondary).lineLimit(1)
             if stale {
                 Text("·").foregroundStyle(.tertiary)
-                Text("another account").foregroundStyle(.tertiary).fixedSize()
-                    .help("Probed while a different Codex account was signed in; it does not vouch for this account. Re-probed when the thread is next active.")
+                Text(probe.accountState == "unknown" ? "account unknown" : "another account").foregroundStyle(.tertiary).fixedSize()
+                    .help(probe.accountState == "unknown"
+                          ? "Recorded before accounts were tracked, so it cannot vouch for the signed-in account. Re-probed when the thread is next active."
+                          : "Probed while a different Codex account was signed in; it does not vouch for this account. Re-probed when the thread is next active.")
             }
             if let ago = probe.finishedAgo, !ago.isEmpty {
                 Text("·").foregroundStyle(.tertiary)
@@ -123,9 +125,34 @@ struct PanelView: View {
                     .foregroundStyle(store.isAlert ? .red : (store.isWarn ? .orange : .secondary))
                     .lineLimit(1)
                 Text(statusRest).font(Type.text).foregroundStyle(.tertiary).lineLimit(1)
+                if let (text, attention) = hooksLine {
+                    Text(text).font(attention ? Type.strong : Type.text).foregroundStyle(attention ? Color.orange : Color.secondary.opacity(0.8)).lineLimit(1)
+                }
             }
             Spacer()
         }
+    }
+
+    /// Hook plumbing state. Attention (orange) whenever Codex will not run the hooks yet.
+    private var hooksLine: (String, Bool)? {
+        guard let s = store.snapshot, store.lastError == nil else { return nil }
+        guard let h = s.hooks else { return (hooksAliveText(s), false) }
+        switch h.state {
+        case "untrusted":
+            return ("Hooks not trusted by Codex · run nerfed hooks trust", true)
+        case "missing":
+            return ("Codex does not list the plugin's hooks · run install.sh", true)
+        default:
+            if h.desktopLoaded != true {
+                return ("Codex app has not loaded the plugin yet · quit and reopen Codex", true)
+            }
+            return ("Hooks alive in Codex · last \(h.lastDesktopEventAgo ?? "just now")", false)
+        }
+    }
+
+    private func hooksAliveText(_ s: Snapshot) -> String {
+        if let ago = s.hooksLastEventAgo, !ago.isEmpty { return "Hooks alive \(ago)" }
+        return "No hook events yet"
     }
 
     private var statusWord: String {
@@ -138,8 +165,10 @@ struct PanelView: View {
     private var statusRest: String {
         guard let s = store.snapshot, store.lastError == nil else { return "" }
         var parts: [String] = []
-        if let acct = s.account?.label, !acct.isEmpty { parts.append(acct) }
-        if let ago = s.hooksLastEventAgo, !ago.isEmpty { parts.append("hooks alive \(ago)") } else { parts.append("no hook events yet") }
+        if let acct = s.account?.label, !acct.isEmpty {
+            parts.append(acct + (s.account?.plan.map { " (\($0))" } ?? ""))
+        }
+        if let ago = s.account?.switchedAgo, !ago.isEmpty { parts.append("account switched \(ago)") }
         return parts.joined(separator: " · ")
     }
 
@@ -246,7 +275,7 @@ struct ThreadRow: View {
                 if thread.probeRunning {
                     HStack(spacing: 5) {
                         ProgressView().controlSize(.mini)
-                        Text("Probing, ephemeral forks in flight…").font(Type.text).foregroundStyle(.secondary)
+                        Text(thread.probeNote.map { "Probing · \($0)…" } ?? "Probing, ephemeral forks in flight…").font(Type.text).foregroundStyle(.secondary)
                     }
                 } else if let p = thread.lastProbe {
                     VerdictLine(probe: p)

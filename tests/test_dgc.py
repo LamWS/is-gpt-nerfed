@@ -260,6 +260,66 @@ class ForkProbeTests(unittest.TestCase):
         self.assertEqual(len(rec["forks"]), 6)
         self.assertEqual(rec["verdict"], "MATCH")
 
+    def test_live_turn_falls_back_to_previous_finished_turn(self):
+        rc, out = run_cli(["probe", "now", "--mode", "fork", "--thread", "busy-thread-1"],
+                          {"FAKE_CODEX_MODEL": "gpt-6-astra", "FAKE_CODEX_BUSY_MODE": "fallback"})
+        self.assertIn("verdict: MATCH", out)
+        rec = dgc.read_json(dgc.probe_path(out.split("probe ")[1].split()[0]))
+        self.assertEqual(rec["thread"]["last_turn"], "turn-prev")
+        self.assertFalse(rec.get("waited_for_turn"))
+
+    def test_live_turn_is_waited_for(self):
+        import threading
+        marker = os.path.join(TMP, "busy-until")
+        open(marker, "w").close()
+        dgc.save_config({**dgc.load_config(), "busy_wait_s": 30})
+        threading.Timer(2.5, lambda: os.remove(marker)).start()
+        rc, out = run_cli(["probe", "now", "--mode", "fork", "--thread", "busy-thread-2"],
+                          {"FAKE_CODEX_MODEL": "gpt-6-astra", "FAKE_CODEX_BUSY_MODE": "wait", "FAKE_CODEX_BUSY_UNTIL": marker})
+        self.assertIn("verdict: MATCH", out)
+        rec = dgc.read_json(dgc.probe_path(out.split("probe ")[1].split()[0]))
+        self.assertTrue(rec.get("waited_for_turn"))
+        self.assertEqual(rec["thread"]["last_turn"], "turn-only")
+        rc, log = run_cli(["log", "--probe", rec["id"], "--json"])
+        kinds = [json.loads(l)["kind"] for l in log.splitlines() if l.strip()]
+        self.assertEqual(kinds[0], "probe_start")
+        self.assertIn("probe_wait", kinds)
+        self.assertIn("probe_round", kinds)
+        self.assertEqual(kinds[-1], "probe_verdict")
+        dgc.save_config({**dgc.load_config(), "busy_wait_s": 600})
+
+    def test_live_turn_gives_up_after_busy_wait(self):
+        marker = os.path.join(TMP, "busy-forever")
+        open(marker, "w").close()
+        dgc.save_config({**dgc.load_config(), "busy_wait_s": 1})
+        rc, out = run_cli(["probe", "now", "--mode", "fork", "--thread", "busy-thread-3"],
+                          {"FAKE_CODEX_MODEL": "gpt-6-astra", "FAKE_CODEX_BUSY_MODE": "wait", "FAKE_CODEX_BUSY_UNTIL": marker})
+        self.assertIn("verdict: INVALID", out)
+        self.assertIn("stayed busy", out)
+        snap = json.loads(run_cli(["snapshot", "--json"])[1])
+        p = next(p for p in snap["recent_probes"] if p["thread_id"] == "busy-thread-3")
+        self.assertTrue(p["retryable"], "a busy thread must offer Retry in the panel")
+        os.remove(marker)
+        dgc.save_config({**dgc.load_config(), "busy_wait_s": 600})
+
+    def test_hooks_status_and_trust(self):
+        trust_file = os.path.join(TMP, "trusted-hooks.json")
+        env = {"FAKE_CODEX_TRUST_FILE": trust_file}
+        rc, out = run_cli(["hooks", "status"], env)
+        self.assertEqual(rc, 1)
+        self.assertIn("0/5 hooks trusted", out)
+        rc, out = run_cli(["hooks", "trust"], env)
+        self.assertEqual(rc, 0)
+        self.assertIn("trusted 5 hook(s)", out)
+        self.assertIn("5/5 hooks trusted", out)
+        self.assertEqual(len(json.load(open(trust_file))), 5)
+        snap = json.loads(run_cli(["snapshot", "--json"], env)[1])
+        self.assertEqual(snap["hooks"]["state"], "trusted")
+        self.assertEqual(snap["hooks"]["trusted"], 5)
+        rc, out = run_cli(["log", "--kind", "hooks_trust"])
+        self.assertIn("hooks_trust", out)
+        os.remove(dgc.HOOKS_STATUS_PATH)
+
     def test_unlisted_expected_model(self):
         rc, out = run_cli(["probe", "now", "--mode", "fork", "--thread", "main-thread-4"], {"FAKE_CODEX_MODEL": "gpt-6-astra", "FAKE_CODEX_THREAD_MODEL": "gpt-7-nova"})
         self.assertIn("verdict: UNLISTED", out)
@@ -374,7 +434,8 @@ class ForkProbeTests(unittest.TestCase):
         self.assertTrue(t["unverified"])
         self.assertTrue(t["last_probe"]["stale_account"])
         self.assertTrue(t["due"], "must be re-probed under the new account")
-        self.assertIn("1 unverified", snap["overall"]["message"])
+        self.assertIn("unverified", snap["overall"]["message"])
+        self.assertGreaterEqual(snap["overall"]["unverified"], 1)
         self.assertEqual(snap["overall"]["status"], "unverified")
         with mock.patch.object(dgc, "link_session", side_effect=lambda st: st.update(kind="main")), \
                 mock.patch.object(dgc, "spawn_worker", return_value=True) as spawn:
@@ -382,6 +443,49 @@ class ForkProbeTests(unittest.TestCase):
             spawn.assert_called_once()
         rc, out = run_cli(["report"])
         self.assertIn("another Codex account", out)
+        os.remove(auth)
+
+    def test_pre_tracking_records_are_unknown_and_unverified(self):
+        # a record from before accounts were tracked, tagged by the buggy v1 migration (label "", plan None)
+        dgc.ensure_dirs()
+        rec = {"id": "legacy0001", "mode": "fresh", "thread_id": None, "status": "done", "verdict": "MATCH", "expected": "gpt-6-astra",
+               "prediction": "gpt-6-astra", "probability": 1.0, "finished": dgc.iso(), "account": {"id": "deadbeef1234", "label": "", "plan": None}}
+        dgc.write_json(dgc.probe_path("legacy0001"), rec)
+        dgc.append_jsonl(dgc.PROBES_INDEX, {"id": "legacy0001", "mode": "fresh", "thread_id": None, "status": "done", "verdict": "MATCH",
+                                             "expected": "gpt-6-astra", "prediction": "gpt-6-astra", "probability": 1.0,
+                                             "finished": dgc.iso(), "account_id": "deadbeef1234"})
+        with open(os.path.join(dgc.NERFED_HOME, ".accounts-migrated"), "w") as f:
+            f.write("2026-09-15T07:22:34Z\n")  # v1 marker
+        snap = json.loads(run_cli(["snapshot", "--json"])[1])
+        legacy = next(p for p in snap["recent_probes"] if p["id"] == "legacy0001")
+        self.assertEqual(legacy["account_state"], "unknown")
+        self.assertTrue(legacy["stale_account"])
+        self.assertNotEqual(snap["overall"]["status"], "ok")
+        self.assertIn("unverified", snap["overall"]["message"])
+        migrated = dgc.read_json(dgc.probe_path("legacy0001"))
+        self.assertEqual(migrated["account"]["id"], "unknown")
+        with open(os.path.join(dgc.NERFED_HOME, ".accounts-migrated")) as f:
+            self.assertTrue(f.read().startswith("v2"))
+        rc, out = run_cli(["log", "--kind", "migration", "--json"])
+        self.assertIn('"records_marked_unknown": 1', out)
+
+    def test_account_switch_is_logged_and_shown(self):
+        auth = os.path.join(os.environ["CODEX_HOME"], "auth.json")
+        with open(auth, "w") as f:
+            json.dump({"auth_mode": "chatgpt", "tokens": {"account_id": "switch-A"}}, f)
+        snap_a = json.loads(run_cli(["snapshot", "--json"])[1])
+        with open(auth, "w") as f:
+            json.dump({"auth_mode": "chatgpt", "tokens": {"account_id": "switch-B"}}, f)
+        snap_b = json.loads(run_cli(["snapshot", "--json"])[1])
+        self.assertIsNotNone(snap_b["account"]["switched_ago"])
+        self.assertIsNone(snap_a["account"].get("switched_ago") if snap_a["account"].get("switched_at") is None else None)
+        rc, out = run_cli(["log", "--kind", "account_switch", "--json"])
+        rows = [json.loads(l) for l in out.splitlines() if l.strip()]
+        self.assertTrue(rows)
+        last = rows[-1]
+        self.assertNotIn("switch-A", json.dumps(last))
+        self.assertEqual(len(last["from_id"]), 12)
+        self.assertNotEqual(last["from_id"], last["to_id"])
         os.remove(auth)
 
     def test_hook_never_crashes(self):

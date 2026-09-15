@@ -39,6 +39,10 @@ class AppServerError(RuntimeError):
     pass
 
 
+class ThreadBusy(AppServerError):
+    """The thread has a turn in progress, so Codex refuses to fork it right now."""
+
+
 def fork_prompt(language: str, count: int) -> str:
     task, rules = PROMPTS.get(language) or PROMPTS["en"]
     return task.replace("{n}", str(count)) + "\n" + rules
@@ -47,11 +51,14 @@ def fork_prompt(language: str, count: int) -> str:
 class AppServer:
     """JSON-RPC-over-stdio client. Server-initiated requests (approvals, user input) are always refused."""
 
-    def __init__(self, codex_bin: str, env: dict | None = None):
+    def __init__(self, codex_bin: str, env: dict | None = None, hooks_enabled: bool = False):
         environ = dict(os.environ if env is None else env)
         environ["NERFED_PROBE_PROCESS"] = "1"
         # Our private app-server must not fire anyone's hooks or desktop notifications while it probes.
-        args = [codex_bin, "app-server", "--stdio", "-c", "notify=[]", "-c", "features.hooks=false"]
+        # (`hooks_enabled` is only used to inspect/trust hook definitions; no turn ever runs in that mode.)
+        args = [codex_bin, "app-server", "--stdio", "-c", "notify=[]"]
+        if not hooks_enabled:
+            args += ["-c", "features.hooks=false"]
         self.proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      stderr=subprocess.DEVNULL, env=environ, text=True, bufsize=1)
         self._write_lock = threading.Lock()
@@ -178,14 +185,48 @@ def read_thread(app: AppServer, thread_id: str) -> dict:
     return thread
 
 
-def last_turn(app: AppServer, thread_id: str) -> dict:
-    data = (app.request("thread/turns/list", {"threadId": thread_id, "limit": 1, "itemsView": "notLoaded",
+def list_turns(app: AppServer, thread_id: str, limit: int = 6) -> list[dict]:
+    data = (app.request("thread/turns/list", {"threadId": thread_id, "limit": limit, "itemsView": "notLoaded",
                                               "sortDirection": "desc"}, 20) or {}).get("data") or []
-    if not data or not isinstance(data[0].get("id"), str):
+    return [t for t in data if isinstance(t.get("id"), str)]
+
+
+def finished_turns(app: AppServer, thread_id: str) -> list[dict]:
+    """Newest first. The listed status can lag the live session (the desktop steers into running turns), so
+    callers still have to handle a fork refusal with ThreadBusy."""
+    turns = list_turns(app, thread_id)
+    if not turns:
         raise AppServerError("thread has no turns yet")
-    if data[0].get("status") not in FINISHED_TURN:
-        raise AppServerError(f"thread's last turn is {data[0].get('status')}; wait for it to finish")
-    return data[0]
+    return [t for t in turns if t.get("status") in FINISHED_TURN]
+
+
+def last_turn(app: AppServer, thread_id: str) -> dict:
+    done = finished_turns(app, thread_id)
+    if not done:
+        raise ThreadBusy("thread has no finished turn yet; wait for the current turn to finish")
+    return done[0]
+
+
+def fork_at_latest_finished_turn(app: AppServer, thread: dict, on_wait=None, wait_until: float = 0.0) -> tuple[dict, dict]:
+    """Fork the thread at its newest finished turn; if Codex refuses because that turn is still live, fall back
+    to the previous finished turn, and if nothing is forkable wait (polling) until `wait_until`."""
+    waited = False
+    while True:
+        candidates = finished_turns(app, thread["id"])
+        last_error: AppServerError | None = None
+        for cand in candidates[:3]:
+            try:
+                return cand, fork_ephemeral(app, thread, cand["id"])
+            except ThreadBusy as e:
+                last_error = e
+        if not candidates:
+            last_error = ThreadBusy("thread has no finished turn yet")
+        if time.time() >= wait_until:
+            raise last_error or ThreadBusy("thread is busy")
+        if not waited and on_wait:
+            on_wait(str(last_error))
+        waited = True
+        time.sleep(min(10.0, max(1.0, wait_until - time.time())))
 
 
 def fork_params(thread: dict, turn_id: str) -> dict:
@@ -197,7 +238,13 @@ def fork_params(thread: dict, turn_id: str) -> dict:
 
 
 def fork_ephemeral(app: AppServer, thread: dict, turn_id: str) -> dict:
-    response = app.request("thread/fork", fork_params(thread, turn_id), 45) or {}
+    try:
+        response = app.request("thread/fork", fork_params(thread, turn_id), 45) or {}
+    except AppServerError as e:
+        msg = str(e).lower()
+        if "in-progress" in msg or "in progress" in msg or "inprogress" in msg:
+            raise ThreadBusy(str(e)) from None
+        raise
     fork = response.get("thread") or {}
     if not fork.get("ephemeral") or not fork.get("id") or fork.get("path") or fork["id"] == thread["id"] \
             or fork.get("forkedFromId") != thread["id"]:
@@ -303,34 +350,62 @@ def run_turns(app: AppServer, forks: list[dict], deadline: float, parallel: bool
 
 
 def probe_thread(codex_bin: str, thread_id: str, queries: int = 3, languages=("zh", "en"), timeout_s: float = 180,
-                 parallel: bool = True, rng: random.Random | None = None) -> dict:
-    """Fork `thread_id` `queries` times (same last turn), ask each fork for a number sequence, return the answers."""
+                 parallel: bool = True, rng: random.Random | None = None, busy_wait_s: float = 0.0, on_wait=None) -> dict:
+    """Fork `thread_id` `queries` times (same finished turn), ask each fork for a number sequence, return the answers.
+    A thread with a live turn is forked at its previous finished turn; if none is forkable, wait up to `busy_wait_s`."""
     rng = rng or random.Random()
     t0 = time.time()
-    deadline = t0 + timeout_s
     app = AppServer(codex_bin)
     try:
         app.initialize()
         thread = read_thread(app, thread_id)
-        turn = last_turn(app, thread_id)
-        forks = []
-        for _ in range(max(1, int(queries))):
-            fork = fork_ephemeral(app, thread, turn["id"])
+        turn, first = fork_at_latest_finished_turn(app, thread, on_wait=on_wait, wait_until=t0 + busy_wait_s)
+        deadline = time.time() + timeout_s
+        forks = [first]
+        for _ in range(max(1, int(queries)) - 1):
+            forks.append(fork_ephemeral(app, thread, turn["id"]))
+        for fork in forks:
             fork["language"] = rng.choice(list(languages) or ["en"])
             fork["count"] = rng.randint(*COUNT_RANGE)
             fork["prompt"] = fork_prompt(fork["language"], fork["count"])
-            forks.append(fork)
         run_turns(app, forks, deadline, parallel=parallel)
     finally:
         app.close()
     return {
         "thread": {"id": thread["id"], "model": thread.get("model"), "provider": thread.get("modelProvider"),
                    "effort": thread.get("reasoningEffort"), "cwd": thread.get("cwd"), "path": thread.get("path"),
-                   "name": thread.get("name"), "last_turn": turn["id"]},
+                   "name": thread.get("name"), "last_turn": turn["id"], "last_turn_status": turn.get("status")},
         "forks": [{k: v for k, v in f.items() if k != "prompt"} for f in forks],
         "elapsed_s": round(time.time() - t0, 1), "parallel": parallel,
         "server_requests": len(app.server_requests),
     }
+
+
+# -- hooks (inspection and trust, the same calls the Codex TUI's /hooks screen makes) --------------
+
+
+def list_plugin_hooks(codex_bin: str, plugin_id: str) -> list[dict]:
+    app = AppServer(codex_bin, hooks_enabled=True)
+    try:
+        app.initialize()
+        data = (app.request("hooks/list", {}, 30) or {}).get("data") or []
+    finally:
+        app.close()
+    return [h for group in data for h in (group.get("hooks") or []) if h.get("pluginId") == plugin_id]
+
+
+def trust_hooks(codex_bin: str, hooks: list[dict]) -> dict:
+    """Record trust for the given hook definitions (their current hashes) in the user's config.toml."""
+    edits = [{"keyPath": 'hooks.state."' + h["key"].replace('"', '\\"') + '"', "mergeStrategy": "upsert",
+              "value": {"enabled": True, "trusted_hash": h["currentHash"]}} for h in hooks if h.get("key") and h.get("currentHash")]
+    if not edits:
+        return {"status": "nothing to do"}
+    app = AppServer(codex_bin, hooks_enabled=True)
+    try:
+        app.initialize()
+        return app.request("config/batchWrite", {"edits": edits, "reloadUserConfig": True}, 30) or {}
+    finally:
+        app.close()
 
 
 def start_ephemeral(app: AppServer, model: str, effort: str | None, provider: str | None, cwd: str) -> dict:
