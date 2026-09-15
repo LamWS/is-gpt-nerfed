@@ -2,10 +2,11 @@
 
 ## 0.4.1 — 2026-09-15
 
-- Panel: click a thread (or the fresh-session row) to open its report in place: fingerprint, probe facts, earlier
-  probes, evidence with what was reverted; right-click for Probe, Copy report, Reveal folder. Fresh session sits
-  below the threads, the face is larger, the panel a little narrower. The Report window is gone (the report lives
-  in the rows; `nerfed report` remains).
+- Panel: click a thread (or the fresh-session row) and the lines under its title slide aside for its report:
+  last verdict, fingerprint, probe facts, earlier probes, evidence with what was reverted, Copy report; nothing
+  else moves. Right-click for Probe, Copy report, Reveal folder. Settings is a page of its own. Fresh session sits
+  below the threads; the header is the chip face with one short line per fact; the panel is a little narrower.
+  The Report window is gone (the report lives in the rows; `nerfed report` remains).
 - Probes: a Suspicious first round no longer triggers a second one by default (`confirm_uncertain` is opt in), so a
   probe costs three answers.
 - Scanner: Codex's usage-limit snapshot in the rollout is not read as a serving signal (it is the last limit family

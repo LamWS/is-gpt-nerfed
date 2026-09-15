@@ -80,7 +80,7 @@ struct FaceView: View {
     let alert: Bool
     let warn: Bool
     let running: Bool
-    var size: CGFloat = 56
+    var size: CGFloat = 72
 
     private var image: NSImage? {
         let name = alert ? "face-alert" : (warn ? "face-warn" : "face-ok")
@@ -165,25 +165,19 @@ struct PanelView: View {
 
     // MARK: header
 
-    // The face, then two lines: the verdict of the moment, and account and plumbing in one quiet line.
+    // The face, and beside it the verdict of the moment over one short line per fact (account, hooks, switch).
     private var header: some View {
-        HStack(spacing: 12) {
+        HStack(alignment: .center, spacing: 12) {
             FaceView(alert: store.isAlert, warn: store.isWarn, running: store.isRunning)
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(statusWord)
                     .font(Type.title)
                     .foregroundStyle(store.isAlert ? .red : (store.isWarn ? .orange : .primary))
-                    .lineLimit(1)
+                    .lineLimit(2)
                 if let (text, attention) = hooksLine, attention {
-                    Text(text).font(Type.strong).foregroundStyle(.orange).lineLimit(1)
-                } else {
-                    // One quiet line, never wrapped: drop the least important part until it fits.
-                    ViewThatFits(in: .horizontal) {
-                        ForEach(statusRestCandidates, id: \.self) { Text($0).lineLimit(1).fixedSize(horizontal: true, vertical: false) }
-                        Text(statusRestCandidates.last ?? "").lineLimit(1)
-                    }
-                    .font(Type.text).foregroundStyle(.tertiary)
+                    Text(text).font(Type.strong).foregroundStyle(.orange).lineLimit(2)
                 }
+                ForEach(quietLines, id: \.self) { Text($0).font(Type.text).foregroundStyle(.tertiary).lineLimit(1) }
             }
             Spacer(minLength: 0)
         }
@@ -197,18 +191,14 @@ struct PanelView: View {
         return m.prefix(1).uppercased() + m.dropFirst()
     }
 
-    /// "w…@example.com · hooks alive 12s ago · switched 45m ago", then the same without the switch note, then the
-    /// account alone: the first that fits on one line is shown.
-    private var statusRestCandidates: [String] {
-        guard let s = store.snapshot, store.lastError == nil else { return [""] }
-        let acct = s.account?.label ?? ""
-        let hooks = hooksLine?.0
-        let switched = s.account?.switchedAgo.map { "switched \($0)" }
-        let full = [acct, hooks, switched].compactMap { $0 }.filter { !$0.isEmpty }
-        let noSwitch = [acct, hooks].compactMap { $0 }.filter { !$0.isEmpty }
+    /// "w…@example.com", "hooks alive 12s ago", "account switched 45m ago": one line each, only when there is something to say.
+    private var quietLines: [String] {
+        guard let s = store.snapshot, store.lastError == nil else { return [] }
         var out: [String] = []
-        for c in [full.joined(separator: " · "), noSwitch.joined(separator: " · "), acct] where !c.isEmpty && !out.contains(c) { out.append(c) }
-        return out.isEmpty ? [""] : out
+        if let acct = s.account?.label, !acct.isEmpty { out.append(acct) }
+        if let (text, attention) = hooksLine, !attention { out.append(text) }
+        if let ago = s.account?.switchedAgo, !ago.isEmpty { out.append("account switched \(ago)") }
+        return out
     }
 
     /// Hook plumbing state; attention = true whenever Codex will not run the hooks yet.
@@ -307,17 +297,24 @@ struct PanelView: View {
         let running = snap?.globalRunning ?? false
         let last = snap?.globalProbe
         return Group(title: "Fresh session", trailing: "\(snap?.defaultModel ?? "default model")\(snap?.defaultEffort.map { " @ \($0)" } ?? "")") {
-            ExpandableRow(isOpen: open == "fresh", toggle: { toggle("fresh") }) {
-                HStack(alignment: .center, spacing: 8) {
+            let history = snap?.globalProbes ?? (last.map { [$0] } ?? [])
+            ExpandableRow(canOpen: ReportLines.hasContent(probes: history, evidence: []), toggle: { toggle("fresh") }) {
+                HStack(alignment: .top, spacing: 8) {
                     Circle().fill(last.map { ($0.isFailure || $0.staleAccount == true) ? Color.secondary.opacity(0.35) : $0.tint } ?? Color.secondary.opacity(0.35))
-                        .frame(width: 7, height: 7)
-                    if running {
-                        ProgressView().controlSize(.mini)
-                        Text("Probing \(snap?.config.queries ?? 3) new ephemeral sessions…").font(Type.text).foregroundStyle(.secondary)
-                    } else if let p = last {
-                        VerdictLine(probe: p)
-                    } else {
-                        Text("Never probed · a new session, no thread context").font(Type.text).foregroundStyle(.secondary)
+                        .frame(width: 7, height: 7).padding(.top, 4)
+                    SwapLines(isOpen: open == "fresh") {
+                        if running {
+                            HStack(spacing: 5) {
+                                ProgressView().controlSize(.mini)
+                                Text("Probing \(snap?.config.queries ?? 3) new ephemeral sessions…").font(Type.text).foregroundStyle(.secondary)
+                            }
+                        } else if let p = last {
+                            VerdictLine(probe: p)
+                        } else {
+                            Text("Never probed · a new session, no thread context").font(Type.text).foregroundStyle(.secondary)
+                        }
+                    } report: {
+                        ReportLines(probes: history, evidence: [], reportText: snap?.globalReportText)
                     }
                     Spacer(minLength: 8)
                     if !running {
@@ -326,9 +323,6 @@ struct PanelView: View {
                     }
                 }
                 .padding(.horizontal, 10).padding(.vertical, 7)
-            } detail: {
-                DetailView(probes: snap?.globalProbes ?? (last.map { [$0] } ?? []), evidence: [], reportText: snap?.globalReportText,
-                           empty: "No fresh-session probe yet. Probe starts new ephemeral sessions with the default model and no history.")
             }
             .contextMenu {
                 if !running { Button(last?.retryable == true ? "Retry the probe" : "Probe now") { store.probeFresh() } }
@@ -354,42 +348,57 @@ struct PanelView: View {
 
 // MARK: - Rows that open in place
 
-/// The summary stays where it is and the report slides in under it, so nothing else in the panel moves.
-/// A hover tint and a link pointer say the row is clickable; the row's own button keeps its own click.
-struct ExpandableRow<Summary: View, Detail: View>: View {
+/// A clickable row. Its content decides what to show for the open state; the row adds the hover tint, the link
+/// pointer and the click (the row's own button keeps its own click). Rows with nothing to report do not open.
+struct ExpandableRow<Content: View>: View {
     @Environment(\.plainRendering) private var plain
-    let isOpen: Bool
+    let canOpen: Bool
     let toggle: () -> Void
-    @ViewBuilder let summary: () -> Summary
-    @ViewBuilder let detail: () -> Detail
+    @ViewBuilder let content: () -> Content
     @State private var hovered = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            summary()
-                .contentShape(Rectangle())
-                .onTapGesture(perform: toggle)
-            if isOpen {
-                detail().transition(.opacity.combined(with: .move(edge: .top)))
-            }
-        }
-        .background(hovered && !plain ? Color.primary.opacity(0.035) : Color.clear)
-        .onHover { hovered = $0 }
-        .pointerStyle(.link)
+        content()
+            .contentShape(Rectangle())
+            .onTapGesture { if canOpen { toggle() } }
+            .clipped()
+            .background(hovered && canOpen && !plain ? Color.primary.opacity(0.035) : Color.clear)
+            .onHover { hovered = $0 }
+            .pointerStyle(canOpen ? .link : .default)
     }
 }
 
-/// The report, in place: fingerprint, probe facts, earlier probes, evidence with what was reverted. Text only.
-struct DetailView: View {
+/// The lines under a title swap between the summary and the report: the summary slides out to the left, the
+/// report slides in from the right, in the same place. Only this row changes height.
+struct SwapLines<Summary: View, Report: View>: View {
+    let isOpen: Bool
+    @ViewBuilder let summary: () -> Summary
+    @ViewBuilder let report: () -> Report
+
+    var body: some View {
+        if isOpen {
+            report().transition(.move(edge: .trailing).combined(with: .opacity))
+        } else {
+            summary().transition(.move(edge: .leading).combined(with: .opacity))
+        }
+    }
+}
+
+/// The report: last verdict, fingerprint, probe facts, earlier probes, evidence with what was reverted. Text only.
+struct ReportLines: View {
     @Environment(Store.self) private var store
     let probes: [ProbeSummary]
     let evidence: [EvidenceInfo]
     let reportText: String?
-    let empty: String
+
+    static func hasContent(probes: [ProbeSummary], evidence: [EvidenceInfo]) -> Bool {
+        !probes.isEmpty || !evidence.isEmpty
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 3) {
             if let p = probes.first {
+                VerdictLine(probe: p)
                 if let r = p.results, !r.isEmpty, !p.isFailure, p.staleAccount != true {
                     fact("Fingerprint", r.map { "\($0.model ?? "?") \(ProbeSummary.pct($0.probability))" }.joined(separator: " · "))
                 }
@@ -403,7 +412,7 @@ struct DetailView: View {
                          : "probed under another Codex account; it does not vouch for this one")
                 }
             } else {
-                Text(empty).foregroundStyle(.tertiary).lineLimit(2)
+                Text("No probe yet").foregroundStyle(.tertiary)
             }
             ForEach(Array(probes.dropFirst().prefix(4))) { p in
                 HStack(spacing: 4) {
@@ -423,12 +432,11 @@ struct DetailView: View {
                     Spacer()
                     TextButton(title: "Copy report") { store.copy(reportText) }
                 }
-                .padding(.top, 2)
             }
         }
         .font(Type.text)
         .foregroundStyle(.secondary)
-        .padding(.leading, 25).padding(.trailing, 10).padding(.bottom, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func fact(_ label: String, _ value: String, tint: Color = .secondary) -> some View {
@@ -488,30 +496,38 @@ struct ThreadRow: View {
         return .secondary.opacity(0.35)
     }
 
+    private var history: [ProbeSummary] { thread.probes ?? (thread.lastProbe.map { [$0] } ?? []) }
+
     var body: some View {
-        ExpandableRow(isOpen: isOpen, toggle: toggle) {
+        ExpandableRow(canOpen: ReportLines.hasContent(probes: history, evidence: thread.evidence ?? []), toggle: toggle) {
             HStack(alignment: .center, spacing: 10) {
                 HStack(alignment: .top, spacing: 8) {
                     Circle().fill(dot).frame(width: 7, height: 7).padding(.top, 5)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(thread.title).font(Type.title).lineLimit(1)
-                        Text(meta).font(Type.text).foregroundStyle(.secondary).lineLimit(1)
-                        if thread.probeRunning {
-                            HStack(spacing: 5) {
-                                ProgressView().controlSize(.mini)
-                                Text(thread.probeNote.map { "Probing · \($0)…" } ?? "Probing, ephemeral forks in flight…").font(Type.text).foregroundStyle(.secondary)
+                        SwapLines(isOpen: isOpen) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(meta).font(Type.text).foregroundStyle(.secondary).lineLimit(1)
+                                if thread.probeRunning {
+                                    HStack(spacing: 5) {
+                                        ProgressView().controlSize(.mini)
+                                        Text(thread.probeNote.map { "Probing · \($0)…" } ?? "Probing, ephemeral forks in flight…").font(Type.text).foregroundStyle(.secondary)
+                                    }
+                                } else if let p = thread.lastProbe {
+                                    VerdictLine(probe: p)
+                                } else {
+                                    Text(thread.due ? "No probe yet · due" : "No probe yet").font(Type.text).foregroundStyle(.tertiary)
+                                }
+                                if thread.hardEvidence > 0, let ev = thread.lastEvidence {
+                                    EvidenceLine(text: ev, ago: thread.lastEvidenceAgo, color: .red)
+                                        .help("Found in the thread's own records, independent of any probe, and still in effect. Click the row for the history.")
+                                } else if thread.softEvidence > 0, let ev = thread.lastEvidence {
+                                    EvidenceLine(text: ev, ago: thread.lastEvidenceAgo, color: .orange)
+                                        .help("Applied through thread settings and still in effect: either you changed it, or Codex did (it lowers effort automatically at usage limits). Click the row for the history.")
+                                }
                             }
-                        } else if let p = thread.lastProbe {
-                            VerdictLine(probe: p)
-                        } else {
-                            Text(thread.due ? "No probe yet · due" : "No probe yet").font(Type.text).foregroundStyle(.tertiary)
-                        }
-                        if thread.hardEvidence > 0, let ev = thread.lastEvidence {
-                            EvidenceLine(text: ev, ago: thread.lastEvidenceAgo, color: .red)
-                                .help("Found in the thread's own records, independent of any probe, and still in effect. Open the row for the history.")
-                        } else if thread.softEvidence > 0, let ev = thread.lastEvidence {
-                            EvidenceLine(text: ev, ago: thread.lastEvidenceAgo, color: .orange)
-                                .help("Applied through thread settings and still in effect: either you changed it, or Codex did (it lowers effort automatically at usage limits). Open the row for the history.")
+                        } report: {
+                            ReportLines(probes: history, evidence: thread.evidence ?? [], reportText: thread.reportText)
                         }
                     }
                 }
@@ -519,9 +535,6 @@ struct ThreadRow: View {
                 action
             }
             .padding(.horizontal, 10).padding(.vertical, 8)
-        } detail: {
-            DetailView(probes: thread.probes ?? (thread.lastProbe.map { [$0] } ?? []), evidence: thread.evidence ?? [],
-                       reportText: thread.reportText, empty: thread.due ? "No probe yet · due at the next turn" : "No probe yet")
         }
         .contextMenu {
             if !thread.probeRunning, !thread.halted {

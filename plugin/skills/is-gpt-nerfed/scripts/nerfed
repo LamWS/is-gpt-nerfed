@@ -1818,7 +1818,7 @@ def demo_snapshot(cfg: dict) -> dict:
             "account": {"label": "y…@example.com", "plan": "plus", "switched_at": iso(t0 - 2700), "switched_ago": "45m ago",
                         "previous_label": "o…@example.com"},
             "overall": {"status": "alert", "downgraded": 1, "suspicious": 1, "unverified": 1, "running": 0,
-                        "message": "1 thread downgraded · 1 suspicious · 1 unverified"},
+                        "message": "1 downgraded · 1 suspicious · 1 unverified"},
             "default_model": "gpt-6-astra", "default_effort": "high", "global_probe": fresh, "global_running": False, "global_alert": False,
             "global_probes": fresh_probes, "global_report_text": report_text_for("Fresh session", "gpt-6-astra", "high", fresh_probes, []),
             "threads": threads, "recent_probes": recent, "demo": True}
@@ -1961,8 +1961,7 @@ def build_snapshot(cfg: dict, hours: float = 48.0) -> dict:
     default_model, default_effort = default_model_settings()
     parts = []
     if downgraded:
-        what = "fresh session" if global_alert and downgraded == 1 else f"{downgraded} thread{'s' if downgraded > 1 else ''}"
-        parts.append(f"{what} downgraded")
+        parts.append("fresh session downgraded" if global_alert and downgraded == 1 else f"{downgraded} downgraded")
     if suspicious:
         parts.append(f"{suspicious} suspicious")
     if unverified:
