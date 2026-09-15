@@ -74,7 +74,7 @@ APP_CODEX_BINS = [
 CODEX_NOTIFICATION_WAV = "/Applications/ChatGPT.app/Contents/Resources/codex-notification.wav"
 
 DEFAULT_CONFIG = {
-    "frequency": "turns:8",          # "turns:N" | "Nm" (minutes) | "manual"
+    "frequency": "30m",              # "Nm" (minutes of activity) | "turns:N" | "manual"
     "mode": "auto",                  # auto: background fork probe when due | nudge: only remind the user
     "queries": 3,                    # parallel ephemeral forks per probe (ModelTrace calibrates 1..3)
     "parallel": True,
@@ -89,7 +89,7 @@ DEFAULT_CONFIG = {
     "mismatch_confidence": 0.8,      # MISMATCH needs p(top) ≥ this, p(declared) ≤ 1-this and a score margin ≥ 0.5σ
     "confirm_uncertain": False,      # opt in: a SUSPICIOUS first round triggers one more round (three more answers)
     "check_updates": True,           # every 10 min, one request to GitHub for the latest release tag; off = no network at all
-    "hide_titles": False,            # panel shows "Thread 1…N" and hides the account label (screenshot mode)
+    "hide_titles": False,            # panel shows "Session 1…N" and hides the account label (screenshot mode)
     "fresh_frequency": "manual",     # heartbeat for the fresh-session probe: "30m", "2h" … (time only; "manual" = off)
     "codex_bin": None,
     "nudge_cooldown_turns": 4,
@@ -865,7 +865,7 @@ LINES = {
         "Heads up: {detail}. If that wasn't you clicking, congrats — you've been downgraded!",
     ],
     "NUDGE": [
-        "Probe due ({why}). Say  {cmd}  in this thread, or  {side}  to keep it out of your context.",
+        "Probe due ({why}). Say  {cmd}  in this session, or  {side}  to keep it out of your context.",
     ],
 }
 
@@ -1038,7 +1038,7 @@ def finalize_probe(rec: dict, outputs: list[dict], expected: str | None, errors:
     elif verdict == "UNLISTED":
         quote = pet_line("UNLISTED", seed=rec["id"], **fmt)
     elif verdict == "UNKNOWN":
-        quote = f"No expected model recorded for this thread; the fingerprint says {top} ({p:.0%})."
+        quote = f"No expected model recorded for this session; the fingerprint says {top} ({p:.0%})."
     else:
         quote = pet_line("INVALID", seed=rec["id"], **fmt)
 
@@ -1069,7 +1069,7 @@ def finalize_probe(rec: dict, outputs: list[dict], expected: str | None, errors:
               top=[{"model": r["model"], "p": r.get("probability"), "score": r.get("score")} for r in (rec.get("results") or [])[:3]],
               hard_evidence=[e.get("detail") for e in hard[:3]], soft_evidence=[e.get("detail") for e in soft[:2]],
               errors=errors[:3] or None)
-    facts = [f"probe {rec['id']}  ·  thread {rec.get('thread_id') or '?'}  ·  mode {rec.get('mode')}  ·  {n}/{q} answers used"
+    facts = [f"probe {rec['id']}  ·  session {rec.get('thread_id') or '?'}  ·  mode {rec.get('mode')}  ·  {n}/{q} answers used"
              + (f" in {rec['rounds']} rounds" if rec.get("rounds", 1) > 1 else "") + (f"  ·  retried ×{rec['retries']}" if rec.get("retries") else "")
              + f"  ·  {rec['elapsed_s']}s",
              f"expected {expected or '?'}" + (f" {p_exp:.0%}" if analysis and a.get("p_expected") is not None else "")
@@ -1225,7 +1225,7 @@ def default_model_settings() -> tuple[str | None, str | None]:
 
 
 def run_fresh_probe(cfg: dict, model: str | None = None, effort: str | None = None, queries: int | None = None, quiet: bool = False) -> dict:
-    """Global probe: brand-new ephemeral sessions, no thread context. Answers 'what does a new session get right now?'."""
+    """Global probe: brand-new ephemeral sessions, no history. Answers 'what does a new session get right now?'."""
     ensure_dirs()
     cb = codex_bin(cfg)
     if not cb:
@@ -1454,7 +1454,7 @@ def cmd_probe_now(args) -> int:
     else:
         tid, how = resolve_thread(args.thread)
     if not tid:
-        raise SystemExit("cannot determine the thread: pass --thread <id> (Codex exports CODEX_THREAD_ID to tool commands)")
+        raise SystemExit("cannot determine the session: pass --thread <id> (Codex exports CODEX_THREAD_ID to tool commands)")
     mode = args.mode
     if mode == "auto":
         mode = "fork" if thread_is_persisted(tid) else "self"
@@ -1472,7 +1472,7 @@ def cmd_probe_now(args) -> int:
     if os.environ.get("CODEX_SANDBOX_NETWORK_DISABLED") == "1" and not args.force:
         with locked_session(tid) as st:
             st["requested"] = True
-        print(f"Queued (thread {tid}, via {how}): this shell runs inside Codex's network-less sandbox, so the probe will start "
+        print(f"Queued (session {tid}, via {how}): this shell runs inside Codex's network-less sandbox, so the probe will start "
               "in the background the moment this turn ends. The verdict pops up as a notification; it is also shown at the "
               f"start of the next turn and in `{DGC_BIN} report`.")
         return 0
@@ -1494,7 +1494,7 @@ def cmd_worker(args) -> int:
         return 0
     try:
         rec = run_fork_probe(args.thread, cfg, queries=args.queries, quiet=True)
-        print(f"{iso()} probe {rec['id']} thread {args.thread} verdict {rec.get('verdict')} ({rec.get('expected')} vs {rec.get('prediction')})")
+        print(f"{iso()} probe {rec['id']} session {args.thread} verdict {rec.get('verdict')} ({rec.get('expected')} vs {rec.get('prediction')})")
     except SystemExit as e:
         print(f"{iso()} worker aborted: {e}")
     finally:
@@ -1522,7 +1522,7 @@ def deliver_alerts(st: dict, out: dict, model_visible: bool, cfg: dict) -> None:
     prefix = "is-gpt-nerfed: "
     out["systemMessage"] = (out.get("systemMessage", "") + "\n" if out.get("systemMessage") else "") + prefix + text
     if model_visible:
-        ctx = ("[is-gpt-nerfed] A model-integrity probe of this thread finished. Before anything else, tell the user "
+        ctx = ("[is-gpt-nerfed] A model-integrity probe of this session finished. Before anything else, tell the user "
                f"verbatim: {text}")
         hso = out.setdefault("hookSpecificOutput", {})
         hso["additionalContext"] = (hso.get("additionalContext", "") + "\n" if hso.get("additionalContext") else "") + ctx
@@ -1585,7 +1585,7 @@ def cmd_hook(args) -> int:
                 log_event("halt_block", sid=sid, tool=payload.get("tool_name"), command=tool_command_preview(payload)[:120], probe=st["halt"].get("id"))
                 out.update({"decision": "deny", "reason": reason,
                             "hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason},
-                            "systemMessage": f"is-gpt-nerfed: halted this thread after a mismatch (halt_on_mismatch=true)."})
+                            "systemMessage": f"is-gpt-nerfed: halted this session after a mismatch (halt_on_mismatch=true)."})
             else:
                 deliver_alerts(st, out, True, cfg)
         elif ev == "Stop":
@@ -1641,7 +1641,7 @@ def cmd_resume(args) -> int:
     with locked_session(tid) as st:
         st["halt"] = None
     log_event("halt_cleared", sid=tid)
-    print(f"halt cleared for thread {tid}")
+    print(f"halt cleared for session {tid}")
     return 0
 
 
@@ -1798,7 +1798,7 @@ def evidence_entries(evs: list, active: list, limit: int = 8) -> list[dict]:
 
 def report_text_for(title: str, model: str | None, effort: str | None, probes: list[dict], evidence: list[dict],
                     failure: dict | None = None) -> str:
-    """Plain-text report of one thread (what 'Copy report' puts on the clipboard)."""
+    """Plain-text report of one session (what 'Copy report' puts on the clipboard)."""
     lines = [f"is-gpt-nerfed · {title} · {model or '?'}" + (f" @ {effort}" if effort else "")]
     for i, p in enumerate(probes):
         lines.append(("Last probe" if i == 0 else "Earlier") + " · " + probe_line(p))
@@ -2093,7 +2093,7 @@ def build_snapshot(cfg: dict, hours: float = 48.0) -> dict:
     account_label = acct["label"]
     if cfg.get("hide_titles"):  # screenshot mode: neutral thread names, no account
         for i, t in enumerate(out_threads, 1):
-            t["title"] = f"Thread {i}"
+            t["title"] = f"Session {i}"
             t["cwd"] = None
         account_label = "account hidden"
     for t in out_threads:  # the in-place report behind each row (and what Copy report puts on the clipboard)
@@ -2453,7 +2453,7 @@ def cmd_report(args) -> int:
         print(f"({other} records were made under another Codex account; they are marked * and do not vouch for this account)")
     print()
     if rows:
-        print(f"{'finished':20} {'probe':11} {'thread':14} {'mode':5} {'expected':16} {'fingerprint':16} {'p':>5} {'n':>3} {'time':>5}  verdict")
+        print(f"{'finished':20} {'probe':11} {'session':14} {'mode':5} {'expected':16} {'fingerprint':16} {'p':>5} {'n':>3} {'time':>5}  verdict")
         for r in rows[-int(args.last or 30):]:
             p = f"{r['probability'] * 100:4.0f}%" if isinstance(r.get("probability"), (int, float)) else "  —  "
             print(f"{(r.get('finished') or '')[:19]:20} {r.get('id') or '':11} {short(r.get('thread_id'), 12):14} {(r.get('mode') or '')[:5]:5} "
@@ -2466,7 +2466,7 @@ def cmd_report(args) -> int:
             counts[r.get("verdict")] = counts.get(r.get("verdict"), 0) + 1
         print("verdict counts: " + ", ".join(f"{k}={v}" for k, v in counts.items()))
     else:
-        print(f"no probes yet. In any Codex thread say:  {SKILL_CMD}   (or {SIDE_CMD})")
+        print(f"no probes yet. In any Codex session say:  {SKILL_CMD}   (or {SIDE_CMD})")
     print()
     sessions = all_sessions()
     hard = [(s, e) for s in sessions for e in s.get("evidence") or [] if e.get("severity") == "hard"]
@@ -2486,7 +2486,7 @@ def cmd_explain(args) -> int:
     if not rec:
         raise SystemExit("unknown probe id")
     print(f"probe {rec['id']}  mode={rec.get('mode')}  status={rec.get('status')}  started={rec.get('started')}  finished={rec.get('finished')}")
-    print(f"thread {rec.get('thread_id')}  expected {rec.get('expected')}  →  fingerprint {rec.get('prediction')} "
+    print(f"session {rec.get('thread_id')}  expected {rec.get('expected')}  →  fingerprint {rec.get('prediction')} "
           f"({(rec.get('probability') or 0) * 100:.1f}%)  verdict {rec.get('verdict')} {rec.get('direction') or ''}")
     if rec.get("calibration"):
         print(f"calibration: {rec['calibration']['queries']} answer(s), beta {rec['calibration']['beta']:.2f}, cv accuracy {rec['calibration']['cv_accuracy']:.1%}")
@@ -2543,11 +2543,11 @@ def rollout_for(thread: str | None, path: str | None) -> str:
             row = rows[0] if rows else None
         if row and row.get("rollout_path"):
             return row["rollout_path"]
-        raise SystemExit(f"no rollout found for thread {thread}")
+        raise SystemExit(f"no rollout found for session {thread}")
     rows = db_recent_main_threads(1)
     if rows:
         return rows[0]["rollout_path"]
-    raise SystemExit("no thread given and none found in the Codex state DB")
+    raise SystemExit("no session given and none found in the Codex state DB")
 
 
 def cmd_scan(args) -> int:
@@ -2875,7 +2875,7 @@ def cmd_doctor(args) -> int:
             rows = db_recent_main_threads(1)
             tid = rows[0]["id"] if rows else None
         if not tid or not cb:
-            check(False, "fork doctor needs a thread id and a codex binary")
+            check(False, "fork doctor needs a session id and a codex binary")
         else:
             try:
                 r = cas.fork_doctor(cb, tid)
@@ -2888,7 +2888,7 @@ def cmd_doctor(args) -> int:
             print(f"  ⚠️  errors logged in {ERRORS_PATH} (last: {last})")
         except Exception:
             pass
-    print(f"{'all good' if not problems else str(problems) + ' problem(s)'} — next: restart the Codex app, then in any thread say  {SKILL_CMD}")
+    print(f"{'all good' if not problems else str(problems) + ' problem(s)'} — next: restart the Codex app, then in any session say  {SKILL_CMD}")
     return 0 if not problems else 1
 
 
@@ -2952,26 +2952,26 @@ def cmd_selftest(args) -> int:
 
 METHOD = f"""is-gpt-nerfed — how the verdict is made (v{VERSION})
 
-1. PASSIVE (every turn, zero tokens). Codex writes every thread to a rollout JSONL file and records, per turn,
+1. PASSIVE (every turn, zero tokens). Codex writes every session to a rollout JSONL file and records, per turn,
    the model slug and reasoning effort it *asked for* (turn_context), every settings change the app applied
    (thread_settings_applied) and the model context window (token_count). The scanner flags:
      hard  silent_model_change     the model changed between turns with no settings change
      hard  silent_effort_change    reasoning effort dropped with no settings change
      hard  hidden_model            a model the catalog marks visibility=hide (e.g. gpt-reserve) ran a turn
      hard  context_window_change   the context window shrank mid-session (a different model class answered)
-     soft  applied_model_change    the app applied a lower-tier model through thread settings (you, or the app?)
+     soft  applied_model_change    the app applied a lower-tier model through session settings (you, or the app?)
      soft  service_tier_change     the Fast/priority tier was dropped
-     good  model upgrade           the thread moved to a newer generation or larger model (a rollout): good news
+     good  model upgrade           the session moved to a newer generation or larger model (a rollout): good news
    Better or worse is not a fixed list: Codex's catalog succession pointer, hidden internal models, the generation
    and size tier in the slug, then the catalog's own ranking decide it (compare_models).
 2. ACTIVE (on your schedule, or when you say {SKILL_CMD}). ModelTrace fingerprinting (MIT, xqy2006):
-   the thread is forked `ephemeral: true` {DEFAULT_CONFIG['queries']} times at its last completed turn — the same mechanism
+   the session is forked `ephemeral: true` {DEFAULT_CONFIG['queries']} times at its last completed turn — the same mechanism
    as Codex's /side — and each fork is asked for ~300 "random" integers in 1..355 with no tools. The value
    distribution (355-dim Hellinger vector) and an ordered-block feature (4 position blocks × 16 bins + last-digit
    distribution) are compared with per-model centroids after projecting out prompt-induced nuisance directions;
    a calibrated softmax gives closed-set attribution probabilities over the bank's models (GPT samples were
    enrolled from the official Codex subscription; cross-validated accuracy 95.5% with 1 answer, 99.6% with 2,
-   100% with 3). Verdict: the thread's declared model vs the attribution, behind a confidence gate, because the
+   100% with 3). Verdict: the session's declared model vs the attribution, behind a confidence gate, because the
    calibrated softmax amplifies small score gaps (a "100%" can hide a thin margin):
      MATCH        top candidate = declared model
      MISMATCH     top candidate ≠ declared model AND p(top) ≥ {DEFAULT_CONFIG['mismatch_confidence']:.0%} AND p(declared) ≤ {1 - DEFAULT_CONFIG['mismatch_confidence']:.0%}
@@ -2982,7 +2982,7 @@ METHOD = f"""is-gpt-nerfed — how the verdict is made (v{VERSION})
      UNLISTED     the declared model is not in the bank (a look-alike is reported, no verdict)
      INVALID      no usable sample (tool use attempted, refusal, truncation, transport error; one automatic retry on transport)
    Inside a /side conversation the model answers the same challenge itself; the numbers stay in the ephemeral
-   side thread, never in your main context.
+   side session, never in your main context.
 
 WHAT IT CANNOT DO
   • It cannot see which weights actually served a request. "Declared model" is what Codex asked for.
@@ -3008,14 +3008,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("probe", help="run or answer a fingerprint probe")
     ps = s.add_subparsers(dest="probe_cmd")
-    a = ps.add_parser("now", help="probe the current thread (forks it ephemerally; self-answer mode inside /side)")
-    a.add_argument("--thread", help="thread id (default: $CODEX_THREAD_ID)")
+    a = ps.add_parser("now", help="probe the current session (forks it ephemerally; self-answer mode inside /side)")
+    a.add_argument("--thread", help="session id (default: $CODEX_THREAD_ID)")
     a.add_argument("--queries", type=int, default=None)
     a.add_argument("--mode", choices=["auto", "fork", "self"], default="auto")
     a.add_argument("--force", action="store_true", help="run inline even inside a network-less sandbox")
-    a.add_argument("--no-pick", action="store_true", help="skip the interactive picker and guess the thread")
+    a.add_argument("--no-pick", action="store_true", help="skip the interactive picker and guess the session")
     a.set_defaults(fn=cmd_probe_now)
-    a = ps.add_parser("fresh", help="global probe: brand-new ephemeral sessions with the default model, no thread context")
+    a = ps.add_parser("fresh", help="global probe: brand-new ephemeral sessions with the default model, no history")
     a.add_argument("--model", help="model slug (default: config.toml model)")
     a.add_argument("--effort", help="reasoning effort (default: config.toml)")
     a.add_argument("--queries", type=int, default=None)
@@ -3030,14 +3030,14 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--last", type=int, default=20)
     a.set_defaults(fn=lambda args: cmd_report(argparse.Namespace(last=args.last)))
 
-    s = sub.add_parser("worker", help="(background) run one fork probe for a thread, or --fresh for a global probe")
+    s = sub.add_parser("worker", help="(background) run one fork probe for a session, or --fresh for a global probe")
     s.add_argument("--thread")
     s.add_argument("--fresh", action="store_true")
     s.add_argument("--model")
     s.add_argument("--effort")
     s.add_argument("--queries", type=int, default=None)
     s.set_defaults(fn=cmd_worker)
-    s = sub.add_parser("resume", help="clear a halt on a thread (only when the user asks)")
+    s = sub.add_parser("resume", help="clear a halt on a session (only when the user asks)")
     s.add_argument("--thread")
     s.set_defaults(fn=cmd_resume)
     s = sub.add_parser("report", help="table of all probes + passive findings")
@@ -3072,7 +3072,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--thread")
     s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_log)
-    s = sub.add_parser("snapshot", help="JSON feed for the menu-bar app: threads, latest probes, config")
+    s = sub.add_parser("snapshot", help="JSON feed for the menu-bar app: sessions, latest probes, config")
     s.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
     s.add_argument("--pretty", action="store_true")
     s.add_argument("--demo", action="store_true", help="synthetic English sample data (for screenshots)")

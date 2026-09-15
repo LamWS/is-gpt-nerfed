@@ -29,7 +29,7 @@ NERFED_DEMO=1 ~/Applications/IsGPTNerfed.app/Contents/MacOS/IsGPTNerfed --render
   `[hooks.state."<hook key>"]` in `~/.codex/config.toml`, written through the app-server's `config/batchWrite`, the same
   call the Codex TUI's `/hooks` screen makes. `nerfed hooks status` / `nerfed hooks trust`. Any change to a hook command
   changes its hash and needs re-trusting; `install.sh` does that.
-- A running Codex app keeps the hook definitions it loaded. Two rules keep reinstalls from hurting open threads:
+- A running Codex app keeps the hook definitions it loaded. Two rules keep reinstalls from hurting open sessions:
   1. the hook entry point never exits non-zero (Codex reads a non-zero exit, and argparse's exit 2 in particular, as
      "block the user's turn"); the shell wrapper exits 0 when `python3` or the script is missing;
   2. `nerfed setup` leaves previous version paths resolvable (symlinks to the new copy) and maintains
@@ -82,7 +82,7 @@ The only server-side statement of the serving model is the `openai-model` respon
 | --- | --- |
 | `log.jsonl` | activity log, one JSON object per line: `account_switch`, `probe_due`, `worker_spawn`, `probe_start`, `probe_round` (per-fork model/effort/tier/timing/usage), `probe_wait`, `probe_retry`, `probe_confirm_round`, `probe_verdict` (candidate list), `scan_finding`, `hooks_trust`, `config_set`, `status_change`, `error`. `nerfed log --since 2h --kind probe_verdict --json` |
 | `probes/*.json`, `probes.jsonl` | full probe records (every fork's answer text) and the index |
-| `sessions/*.json` | per-thread schedule state, evidence, alerts |
+| `sessions/*.json` | per-session schedule state, evidence, alerts |
 | `events.jsonl` | raw hook event metadata |
 | `account.json`, `hooks_status.json`, `state.json` | last seen account, cached hook trust state, last panel status |
 
@@ -92,7 +92,7 @@ The app also logs to the unified log (Console.app, subsystem `is-gpt-nerfed`).
 
 | key | default | |
 | --- | --- | --- |
-| `frequency` | `turns:8` | `turns:N`, `Nm`, `Nh` (of activity), `manual` |
+| `frequency` | `30m` | `turns:N`, `Nm`, `Nh` (of activity), `manual` |
 | `fresh_frequency` | `manual` | `Nm`, `Nh`, `manual` |
 | `mode` | `auto` | `auto` / `nudge` |
 | `queries` | `3` | forks per probe, 1–3 |
@@ -100,7 +100,7 @@ The app also logs to the unified log (Console.app, subsystem `is-gpt-nerfed`).
 | `languages` | `zh,en` | prompt language pool |
 | `passive` | `true` | rollout scan on every turn |
 | `notify`, `notify_on_ok` | `true`, `false` | macOS notifications |
-| `announce_ok` | `false` | push Match verdicts into the thread |
+| `announce_ok` | `false` | push Match verdicts into the session |
 | `sound` | `true` | Codex notification sound on a downgrade |
 | `halt_on_mismatch` | `false` | deny work tools after a mismatch until `nerfed resume` |
 | `mismatch_confidence` | `0.8` | verdict gate |

@@ -40,7 +40,7 @@ class AppServerError(RuntimeError):
 
 
 class ThreadBusy(AppServerError):
-    """The thread has a turn in progress, so Codex refuses to fork it right now."""
+    """The session has a turn in progress, so Codex refuses to fork it right now."""
 
 
 def fork_prompt(language: str, count: int) -> str:
@@ -178,7 +178,7 @@ def read_thread(app: AppServer, thread_id: str) -> dict:
     if thread.get("id") != thread_id:
         raise AppServerError("codex returned metadata for a different thread")
     if thread.get("ephemeral") or not isinstance(thread.get("path"), str) or not thread["path"]:
-        raise AppServerError("thread has no persisted history to fork (ephemeral or not saved yet)")
+        raise AppServerError("session has no persisted history to fork (ephemeral or not saved yet)")
     for key in ("model", "modelProvider", "cwd"):
         if not thread.get(key):
             raise AppServerError(f"thread metadata lacks {key}")
@@ -196,14 +196,14 @@ def finished_turns(app: AppServer, thread_id: str) -> list[dict]:
     callers still have to handle a fork refusal with ThreadBusy."""
     turns = list_turns(app, thread_id)
     if not turns:
-        raise AppServerError("thread has no turns yet")
+        raise AppServerError("session has no turns yet")
     return [t for t in turns if t.get("status") in FINISHED_TURN]
 
 
 def last_turn(app: AppServer, thread_id: str) -> dict:
     done = finished_turns(app, thread_id)
     if not done:
-        raise ThreadBusy("thread has no finished turn yet; wait for the current turn to finish")
+        raise ThreadBusy("session has no finished turn yet; wait for the current turn to finish")
     return done[0]
 
 
@@ -220,7 +220,7 @@ def fork_at_latest_finished_turn(app: AppServer, thread: dict, on_wait=None, wai
             except ThreadBusy as e:
                 last_error = e
         if not candidates:
-            last_error = ThreadBusy("thread has no finished turn yet")
+            last_error = ThreadBusy("session has no finished turn yet")
         if time.time() >= wait_until:
             raise last_error or ThreadBusy("thread is busy")
         if not waited and on_wait:

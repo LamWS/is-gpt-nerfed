@@ -19,7 +19,7 @@ struct SettingsView: View {
         let cfg = store.snapshot?.config
         VStack(alignment: .leading, spacing: 14) {
             Group(title: "Schedule") {
-                row("Probe each active thread") { picker(cfg?.frequency ?? "turns:8", frequencies, key: "frequency") }
+                row("Probe each active session") { picker(cfg?.frequency ?? "30m", frequencies, key: "frequency") }
                 RowSeparator()
                 row("Fresh-session heartbeat") { picker(cfg?.freshFrequency ?? "manual", heartbeats, key: "fresh_frequency") }
                 RowSeparator()
@@ -40,7 +40,7 @@ struct SettingsView: View {
                     .frame(width: 190)
                 }
                 RowSeparator()
-                row("Halt the thread after a mismatch") { toggle("halt_on_mismatch", cfg?.haltOnMismatch ?? false) }
+                row("Halt the session after a mismatch") { toggle("halt_on_mismatch", cfg?.haltOnMismatch ?? false) }
                 RowSeparator()
                 row("Scan rollouts on every turn") { toggle("passive", cfg?.passive ?? true) }
             }
@@ -49,12 +49,12 @@ struct SettingsView: View {
                 RowSeparator()
                 row("Also notify on a match") { toggle("notify_on_ok", cfg?.notifyOnOk ?? false) }
                 RowSeparator()
-                row("Post matches into the thread") { toggle("announce_ok", cfg?.announceOk ?? false) }
+                row("Post matches into the session") { toggle("announce_ok", cfg?.announceOk ?? false) }
                 RowSeparator()
                 row("Sound on a downgrade") { toggle("sound", cfg?.sound ?? true) }
             }
             Group(title: "App") {
-                row("Hide thread titles and account (for screenshots)") { toggle("hide_titles", cfg?.hideTitles ?? false) }
+                row("Hide session titles and account (for screenshots)") { toggle("hide_titles", cfg?.hideTitles ?? false) }
                 RowSeparator()
                 row("Check for updates") { toggle("check_updates", cfg?.checkUpdates ?? true) }
                 RowSeparator()

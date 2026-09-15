@@ -83,7 +83,7 @@
   "interface": {
     "displayName": "Is GPT nerfed?",
     "shortDescription": "Catch silent model downgrades in your Codex sessions",
-    "longDescription": "is-gpt-nerfed watches every Codex thread for silent model, reasoning-effort and context-window changes (zero tokens), and on a schedule you choose forks the thread ephemerally to run ModelTrace fingerprint probes that attribute the answering model. Results arrive as a card, a macOS notification and a message in the thread. Everything stays on your machine. Fingerprint bank and scorer: github.com/xqy2006/ModelTrace (MIT).",
+    "longDescription": "is-gpt-nerfed watches every Codex session for silent model, reasoning-effort and context-window changes (zero tokens), and on a schedule you choose forks the thread ephemerally to run ModelTrace fingerprint probes that attribute the answering model. Results arrive as a card, a macOS notification and a message in the thread. Everything stays on your machine. Fingerprint bank and scorer: github.com/xqy2006/ModelTrace (MIT).",
     "developerName": "is-gpt-nerfed contributors",
     "category": "Developer Tools",
     "capabilities": [

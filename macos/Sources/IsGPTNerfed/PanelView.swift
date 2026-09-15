@@ -97,8 +97,8 @@ struct VerdictLine: View {
                 Text(probe.accountState == "unknown" ? "\(probe.word), account unknown" : "\(probe.word), another account")
                     .foregroundStyle(.tertiary).lineLimit(1)
                     .help(probe.accountState == "unknown"
-                          ? "Recorded before accounts were tracked, so it cannot vouch for the signed-in account. Re-probed when the thread is next active."
-                          : "Probed while a different Codex account was signed in; it does not vouch for this account. Re-probed when the thread is next active.")
+                          ? "Recorded before accounts were tracked, so it cannot vouch for the signed-in account. Re-probed when the session is next active."
+                          : "Probed while a different Codex account was signed in; it does not vouch for this account. Re-probed when the session is next active.")
             } else {
                 Text(probe.word).font(Type.strong).foregroundStyle(probe.tint)
                 Text("·").foregroundStyle(.tertiary)
@@ -245,7 +245,7 @@ struct PanelView: View {
                 setupRow("The plugin is not registered with Codex yet. Install adds the bundled plugin and records hook trust.",
                          button: store.installing ? nil : "Install") { Task { await store.installPlugin() } }
             } else if s.hooks?.state == "untrusted" {
-                setupRow("Codex has not been told to trust the plugin's hooks, so nothing runs in your threads yet.",
+                setupRow("Codex has not been told to trust the plugin's hooks, so nothing runs in your sessions yet.",
                          button: "Trust hooks") { Task { await store.trustHooks() } }
             }
         }
@@ -271,9 +271,9 @@ struct PanelView: View {
 
     private var threads: some View {
         let list = store.snapshot?.threads ?? []
-        return Group(title: "Active threads", trailing: list.isEmpty ? nil : "\(list.count) in 48 h") {
+        return Group(title: "Active sessions", trailing: list.isEmpty ? nil : "\(list.count) in 48 h") {
             if list.isEmpty {
-                Text(store.snapshot == nil ? "Reading the ledger…" : "No Codex threads in the last 48 hours.")
+                Text(store.snapshot == nil ? "Reading the ledger…" : "No Codex sessions in the last 48 hours.")
                     .font(Type.text).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 40)
             } else if plain {  // offscreen self-portrait: ScrollView does not render
@@ -323,7 +323,7 @@ struct PanelView: View {
                         } else if let p = last {
                             VerdictLine(probe: p)
                         } else {
-                            Text("Never probed · a new session, no thread context").font(Type.text).foregroundStyle(.secondary)
+                            Text("Never probed · a brand-new session, no history").font(Type.text).foregroundStyle(.secondary)
                         }
                     } report: {
                         ReportLines(probes: history, evidence: [], failure: failure)
@@ -533,8 +533,8 @@ struct ThreadRow: View {
                                         .help(sev == "good"
                                               ? "Codex's own records show a switch to a better model (a rollout). Good news, still in effect. Click the row for the history."
                                               : sev == "hard"
-                                              ? "Found in the thread's own records, independent of any probe, and still in effect. Click the row for the history."
-                                              : "Applied through thread settings and still in effect: either you changed it, or Codex did (it lowers effort automatically at usage limits). Click the row for the history.")
+                                              ? "Found in the session's own records, independent of any probe, and still in effect. Click the row for the history."
+                                              : "Applied through the session's settings and still in effect: either you changed it, or Codex did (it lowers effort automatically at usage limits). Click the row for the history.")
                                 }
                             }
                         } report: {
@@ -571,10 +571,10 @@ struct ThreadRow: View {
             EmptyView()
         } else if thread.halted {
             RowButton(title: "Resume", destructive: true) { Task { await store.resume(thread) } }
-                .help("Clear the halt (work tools are denied in this thread)")
+                .help("Clear the halt (work tools are denied in this session)")
         } else {
             RowButton(title: thread.lastFailure?.retryable == true ? "Retry" : "Probe") { store.probe(thread) }
-                .help("Fork this thread ephemerally (3 parallel forks) and fingerprint the answering model")
+                .help("Fork this session ephemerally (3 parallel forks) and fingerprint the answering model")
         }
     }
 }

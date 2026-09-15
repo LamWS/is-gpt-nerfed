@@ -559,7 +559,7 @@ class ForkProbeTests(unittest.TestCase):
             snap = json.loads(run_cli(["snapshot", "--json"])[1])
             titles = [t["title"] for t in snap["threads"]]
             self.assertTrue(titles, "test ledger should have threads by now")
-            self.assertTrue(all(re.fullmatch(r"Thread \d+", t) for t in titles), titles)
+            self.assertTrue(all(re.fullmatch(r"Session \d+", t) for t in titles), titles)
             self.assertEqual(snap["account"]["label"], "account hidden")
             self.assertTrue(all(t["cwd"] is None for t in snap["threads"]))
         finally:

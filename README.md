@@ -9,11 +9,12 @@ You pick a model in Codex. This tells you whether that model is actually the one
 <br clear="right">
 
 <p align="center">
-  <img src="docs/panel.png" width="436" alt="Menu bar panel: status, active threads with verdicts, fresh-session probe">
-  <img src="docs/panel-detail.png" width="436" alt="A thread opened in place: fingerprint, probe facts, earlier probes, evidence">
+  <img src="docs/panel.png" width="480" alt="Menu bar panel: status, active sessions with verdicts, fresh-session probe">
 </p>
 <p align="center">
-  <img src="docs/panel-settings.png" width="436" alt="Menu bar panel with settings">
+  <img src="docs/panel-detail.png" width="420" alt="A session opened in place: fingerprint, earlier probes, evidence">
+  <img src="docs/panel-settings.png" width="420" alt="Settings">
+  <br><sub>A session opened in place · Settings</sub>
 </p>
 <p align="center">
   <img src="docs/face-ok.png" width="72" alt="all clear"> <img src="docs/face-warn.png" width="72" alt="suspicious"> <img src="docs/face-alert.png" width="72" alt="nerfed">
@@ -29,7 +30,7 @@ reads that and flags anything that changed without you changing it: a model swap
 internal model (such as `gpt-reserve`), a context window that shrank. A move to a newer or larger model (a rollout)
 is reported too, as good news.
 
-**On a schedule, three forks.** The thread is forked ephemerally three times at its last finished turn, the same
+**On a schedule, three forks.** The session is forked ephemerally three times at its last finished turn, the same
 mechanism as `/side`, invisible in Codex. Each fork is asked for about 300 "random" numbers. Models are bad at
 random, each in its own way, and [ModelTrace](https://github.com/xqy2006/ModelTrace)'s calibrated bank turns that
 into a fingerprint (100 % accuracy with three answers in cross-validation). The verdict compares the fingerprint with
@@ -45,7 +46,7 @@ the model you selected:
 | Unlisted | your model is not in the fingerprint bank yet |
 | Invalid | no usable answer (tool use, refusal, network); not a verdict: the row keeps its last one and offers Retry |
 
-A mismatch reaches you as a macOS notification, a message in the thread, and a red face in the menu bar.
+A mismatch reaches you as a macOS notification, a message in the session, and a red face in the menu bar.
 Match is silent.
 
 ## Install
@@ -74,28 +75,28 @@ Needs Codex 0.117 or newer (desktop app or CLI) and the system `python3`. Uninst
 
 ## Using it
 
-- **Nothing.** Every thread you work in is probed in the background every 8 turns.
-- **`$is-gpt-nerfed`** in a thread probes it now. `/side $is-gpt-nerfed` keeps that out of your context.
-- **Menu bar.** Threads of the last 48 hours with their last verdict; click one for its report (fingerprint, earlier
-  probes, evidence), right-click for actions. Probe and Retry per thread, and *Fresh session*: what a brand-new
+- **Nothing.** Every session you work in is probed in the background after 30 minutes of activity.
+- **`$is-gpt-nerfed`** in a session probes it now. `/side $is-gpt-nerfed` keeps that out of your context.
+- **Menu bar.** Sessions of the last 48 hours with their last verdict; click one for its report (fingerprint, earlier
+  probes, evidence), right-click for actions. Probe and Retry per session, and *Fresh session*: what a brand-new
   session gets right now.
-- **Terminal.** `nerfed probe now` (pick a thread), `nerfed report`, `nerfed explain <probe>`, `nerfed log --since 2h`.
+- **Terminal.** `nerfed probe now` (pick a session), `nerfed report`, `nerfed explain <probe>`, `nerfed log --since 2h`.
 
 Settings live in the app, or `nerfed config set <key> <value>`:
 
 | key | default | |
 | --- | --- | --- |
-| `frequency` | `turns:8` | per thread: every N turns (`turns:8`) or every N minutes of activity (`30m`) |
+| `frequency` | `30m` | per session: every N minutes of activity (`30m`) or every N turns (`turns:8`) |
 | `fresh_frequency` | `manual` | probe a brand-new session every N minutes, whatever you are doing |
 | `mode` | `auto` | `auto` probes in the background, `nudge` only reminds you |
 | `halt_on_mismatch` | `false` | block tools after a mismatch until you say resume |
 | `notify_on_ok`, `announce_ok` | `false` | also report Match |
-| `hide_titles` | `false` | screenshot mode: neutral thread names, no account |
+| `hide_titles` | `false` | screenshot mode: neutral session names, no account |
 
 ## Accounts
 
-Threads are shared between Codex accounts; nerfing may not be. Every probe is tagged with the signed-in account (a
-hash, never the id). After you switch accounts, older verdicts show as "another account" and those threads are
+Sessions are shared between Codex accounts; nerfing may not be. Every probe is tagged with the signed-in account (a
+hash, never the id). After you switch accounts, older verdicts show as "another account" and those sessions are
 probed again.
 
 ## Limits
@@ -109,7 +110,7 @@ probed again.
 
 ## Privacy
 
-Reads `~/.codex` (thread records, models cache; `auth.json` only for an account hash and a masked e-mail). Writes
+Reads `~/.codex` (session records, models cache; `auth.json` only for an account hash and a masked e-mail). Writes
 `~/.codex/is-gpt-nerfed` (probes, verdicts, `log.jsonl`). The forks are ordinary Codex inference under your account.
 The only network request of its own is one to GitHub every ten minutes for the latest release tag, while the app is
 open; switch it off in Settings and it makes none.
@@ -118,6 +119,6 @@ open; switch it off in Settings and it makes none.
 
 [ModelTrace](https://github.com/xqy2006/ModelTrace) (xqy2006, MIT) for the fingerprint bank, scorer, prompts and the
 fork-and-verify sequence; [hlwy-ai-checker](https://github.com/hanlinwenyuan/hlwy-ai-checker) for the random-number
-idea; [simple-term-menu](https://github.com/IngoMeyer441/simple-term-menu) (MIT) for the thread picker.
+idea; [simple-term-menu](https://github.com/IngoMeyer441/simple-term-menu) (MIT) for the session picker.
 
 MIT license. Internals, build and contribution notes: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).

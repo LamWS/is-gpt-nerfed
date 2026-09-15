@@ -2,7 +2,9 @@
 
 ## 0.4.1 — 2026-09-15
 
-- Panel: click a thread (or the fresh-session row) and the lines under its title slide aside for its report:
+- "Session" everywhere the panel, the CLI and the docs speak to people (Codex's API keeps calling them threads).
+  The default schedule is every 30 minutes of activity per session instead of every 8 turns.
+- Panel: click a session (or the fresh-session row) and the lines under its title slide aside for its report:
   last verdict, fingerprint, probe facts, earlier probes, evidence with what was reverted, Copy report; nothing
   else moves. Right-click for Probe, Copy report, Reveal folder. Settings is a page of its own. Fresh session sits
   below the threads; the header is the chip face with one short line per fact; the panel is a little narrower.
