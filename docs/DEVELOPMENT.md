@@ -109,6 +109,21 @@ The app also logs to the unified log (Console.app, subsystem `is-gpt-nerfed`).
 | `hide_titles` | `false` | screenshot mode |
 | `codex_bin` | auto | path to the codex binary (found on PATH or inside the ChatGPT/Codex app) |
 
+## Signing and notarization
+
+One-time, with an Apple Developer Program membership:
+
+1. Certificate: Xcode → Settings → Accounts → your Apple ID → Manage Certificates → + → **Developer ID Application**.
+   `security find-identity -v -p codesigning` then lists `Developer ID Application: Name (TEAMID)`.
+2. Notary credentials: an app-specific password from account.apple.com (Sign-In and Security → App-Specific
+   Passwords), stored once in the keychain:
+   `xcrun notarytool store-credentials nerfed-notary --apple-id <email> --team-id <TEAMID> --password <that password>`.
+
+Every release: `SIGN_IDENTITY="Developer ID Application: Name (TEAMID)" NOTARY_PROFILE=nerfed-notary ./macos/build.sh --release`
+signs the bundle (hardened runtime, timestamp), notarizes the zip, staples the ticket to the app, rebuilds the zip,
+then makes, signs, notarizes and staples the dmg. `spctl -a -vv` must end with `source=Notarized Developer ID`.
+A notarized app opens without the right-click dance, and the self-updater installs it silently.
+
 ## Release
 
 Tag releases `vX.Y.Z` and attach the zip and its `.sha256` (`build.sh --zip` writes both; `build.sh --dmg` adds a

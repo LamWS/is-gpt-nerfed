@@ -10,7 +10,8 @@
 - Self-update: every 10 minutes the app asks GitHub for the latest release tag (one request; `check_updates`
   switches it off) and shows "vX.Y.Z is out · update" in the footer, with one notification per new version. Clicking
   it downloads the release zip, verifies its sha256, replaces the app (the old copy goes to the Trash) and relaunches
-  (`nerfed update-install`). Failed checks are silent. `build.sh --dmg` makes a disk image for first-time downloads.
+  (`nerfed update-install`). Failed checks are silent. `build.sh --dmg` makes a disk image for first-time downloads;
+  `build.sh --release` signs with a Developer ID, notarizes and staples both (SIGN_IDENTITY, NOTARY_PROFILE).
 - "Open folder in Finder" (right-click) now opens the thread's folder; it used to only activate Finder, which showed
   whatever window was in front.
 - Copy report moved to the row's right-click menu. The prompt-language row left Settings: the probes use

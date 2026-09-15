@@ -1,11 +1,50 @@
 #!/bin/sh
-# Build IsGPTNerfed.app (menu bar app) with SwiftPM and assemble an ad-hoc signed bundle.
-# Usage: ./macos/build.sh [--run | --install | --zip | --dmg]     (needs Xcode 26+ / macOS 26 SDK)
+# Build IsGPTNerfed.app (menu bar app) with SwiftPM and assemble the bundle.
+# Usage: ./macos/build.sh [--run | --install | --zip | --dmg | --release]     (needs Xcode 26+ / macOS 26 SDK)
 #   --run      launch from the build folder
 #   --install  copy to ~/Applications and launch
-#   --zip      write dist/IsGPTNerfed-<version>.zip for a GitHub release (ad-hoc signed: first launch needs
-#              right-click → Open, or `xattr -dr com.apple.quarantine ~/Applications/IsGPTNerfed.app`)
+#   --zip      write dist/IsGPTNerfed-<version>.zip (+ .sha256), what the in-app updater downloads
+#   --dmg      write dist/IsGPTNerfed-<version>.dmg (+ .sha256), for first-time downloads
+#   --release  zip + dmg, notarized and stapled (needs SIGN_IDENTITY and NOTARY_PROFILE, see below)
+#
+# Signing: with SIGN_IDENTITY="Developer ID Application: Name (TEAMID)" in the environment the bundle is signed with
+# that certificate, hardened runtime and a secure timestamp (what notarization requires); without it, ad-hoc, and a
+# downloaded copy needs right-click → Open once. Notarization: NOTARY_PROFILE names a keychain profile made once with
+#   xcrun notarytool store-credentials <profile> --apple-id <email> --team-id <TEAMID> --password <app-specific password>
 set -eu
+SIGN_IDENTITY="${SIGN_IDENTITY:-}"
+NOTARY_PROFILE="${NOTARY_PROFILE:-}"
+
+sign_bundle() {  # $1 = bundle or dmg
+  if [ -n "$SIGN_IDENTITY" ]; then
+    codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$1"
+  else
+    codesign --force --sign - "$1" >/dev/null 2>&1 || true
+  fi
+}
+
+notarize() {  # $1 = zip or dmg to submit; the stapler runs on $2 (app or dmg)
+  [ -n "$NOTARY_PROFILE" ] || { echo "NOTARY_PROFILE is not set; see the header of this script" >&2; exit 1; }
+  echo "notarizing $(basename "$1") …"
+  if ! xcrun notarytool submit "$1" --keychain-profile "$NOTARY_PROFILE" --wait; then
+    echo "notarization failed; the log:" >&2
+    ID="$(xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" 2>/dev/null | grep -m1 -o 'id: [0-9a-f-]*' | cut -d' ' -f2 || true)"
+    [ -n "$ID" ] && xcrun notarytool log "$ID" --keychain-profile "$NOTARY_PROFILE" >&2 || true
+    exit 1
+  fi
+  xcrun stapler staple "$2" >/dev/null
+}
+
+make_zip() {  # $1 = out path
+  rm -f "$1"; ditto -c -k --keepParent "$APP" "$1"
+}
+
+make_dmg() {  # $1 = out path
+  rm -f "$1"
+  STAGE="$(mktemp -d)"; cp -R "$APP" "$STAGE/"; ln -s /Applications "$STAGE/Applications"
+  hdiutil create -volname "IsGPTNerfed $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$1" >/dev/null
+  rm -rf "$STAGE"
+}
 HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "$HERE"
 swift build -c release 2>&1 | grep -v '^\[' || true
@@ -40,8 +79,10 @@ cp -R "$HERE/../plugin" "$MK/plugin"
 cp "$HERE/../.agents/plugins/marketplace.json" "$MK/.agents/plugins/marketplace.json"
 find "$MK" -name '__pycache__' -type d -prune -exec rm -rf {} +
 chmod +x "$MK/plugin/skills/is-gpt-nerfed/scripts/nerfed"
-codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
-echo "built $APP"
+sign_bundle "$APP"
+echo "built $APP ($( [ -n "$SIGN_IDENTITY" ] && echo "signed: $SIGN_IDENTITY" || echo "ad-hoc signed" ))"
+VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$HERE/Info.plist")"
+DIST="$HERE/../dist"
 case "${1:-}" in
   --run)
     pkill -x IsGPTNerfed 2>/dev/null || true
@@ -55,19 +96,23 @@ case "${1:-}" in
     for i in 1 2 3 4 5; do open "$DEST" 2>/dev/null && break; sleep 1; done   # LaunchServices can lag right after pkill
     echo "installed to $DEST and launched (menu bar); enable 'Launch at login' in the panel's settings" ;;
   --zip)
-    VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$HERE/Info.plist")"
-    DIST="$HERE/../dist"; mkdir -p "$DIST"
-    ZIP="$DIST/IsGPTNerfed-$VERSION.zip"; rm -f "$ZIP"
-    ditto -c -k --keepParent "$APP" "$ZIP"
+    mkdir -p "$DIST"; ZIP="$DIST/IsGPTNerfed-$VERSION.zip"
+    make_zip "$ZIP"
     shasum -a 256 "$ZIP" | tee "$ZIP.sha256"
     echo "release archive: $ZIP" ;;
   --dmg)   # for people: a disk image with the app and an Applications shortcut (the updater uses the zip)
-    VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$HERE/Info.plist")"
-    DIST="$HERE/../dist"; mkdir -p "$DIST"
-    DMG="$DIST/IsGPTNerfed-$VERSION.dmg"; rm -f "$DMG"
-    STAGE="$(mktemp -d)"; cp -R "$APP" "$STAGE/"; ln -s /Applications "$STAGE/Applications"
-    hdiutil create -volname "IsGPTNerfed $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
-    rm -rf "$STAGE"
+    mkdir -p "$DIST"; DMG="$DIST/IsGPTNerfed-$VERSION.dmg"
+    make_dmg "$DMG"; sign_bundle "$DMG"
     shasum -a 256 "$DMG" | tee "$DMG.sha256"
     echo "disk image: $DMG" ;;
+  --release)   # signed, notarized, stapled zip + dmg; attach all four files (and the two .sha256) to the GitHub release
+    [ -n "$SIGN_IDENTITY" ] || { echo "SIGN_IDENTITY is not set (Developer ID Application certificate); see the header" >&2; exit 1; }
+    mkdir -p "$DIST"; ZIP="$DIST/IsGPTNerfed-$VERSION.zip"; DMG="$DIST/IsGPTNerfed-$VERSION.dmg"
+    make_zip "$ZIP"; notarize "$ZIP" "$APP"        # the ticket is stapled to the app …
+    make_zip "$ZIP"                                # … so the zip is rebuilt from the stapled app
+    shasum -a 256 "$ZIP" | tee "$ZIP.sha256"
+    make_dmg "$DMG"; sign_bundle "$DMG"; notarize "$DMG" "$DMG"
+    shasum -a 256 "$DMG" | tee "$DMG.sha256"
+    spctl -a -vv "$APP" 2>&1 | tail -2
+    echo "release files: $ZIP $DMG (+ .sha256 each)" ;;
 esac
