@@ -17,6 +17,7 @@ final class Store {
     var refreshing = false
     var lastRefresh: Date?
     var reportText: String?
+    var installing = false
     var launchAtLogin: Bool = SMAppService.mainApp.status == .enabled
     private var pollTask: Task<Void, Never>?
     private var lastStatusKey = ""
@@ -126,6 +127,30 @@ final class Store {
             lastError = error.localizedDescription
         }
         Task { try? await Task.sleep(for: .seconds(3)); await refresh() }
+    }
+
+    /// First run from a downloaded .app: register the bundled plugin with Codex, install the pet, trust the hooks.
+    func installPlugin() async {
+        installing = true
+        defer { installing = false }
+        appLog.notice("installing the bundled plugin into Codex")
+        do {
+            let out = try await DGC.run(["setup", "--trust-hooks"], timeout: 240)
+            appLog.notice("setup: \(out.suffix(400), privacy: .public)")
+        } catch {
+            // setup exits non-zero when doctor still lists a problem; the snapshot below shows what is left
+            appLog.error("setup returned an error: \(error.localizedDescription, privacy: .public)")
+        }
+        await refresh()
+        if snapshot?.install?.pluginEnabled != true {
+            lastError = "Install did not complete; run ./install.sh from a checkout or see nerfed doctor"
+        }
+    }
+
+    func trustHooks() async {
+        appLog.notice("trusting hooks from the panel")
+        do { _ = try await DGC.run(["hooks", "trust"], timeout: 90) } catch { lastError = error.localizedDescription }
+        await refresh()
     }
 
     func resume(_ thread: ThreadInfo) async {

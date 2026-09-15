@@ -10,6 +10,7 @@ struct Snapshot: Codable {
     var hooksLastEvent: String?
     var hooksLastEventAgo: String?
     var hooks: HooksInfo?
+    var install: InstallInfo?
     var overall: Overall
     var defaultModel: String?
     var defaultEffort: String?
@@ -28,6 +29,15 @@ struct AccountInfo: Codable {
     var switchedAt: String?
     var switchedAgo: String?
     var previousLabel: String?
+}
+
+/// Whether the plugin (bundled in this app or from a checkout) is registered with Codex.
+struct InstallInfo: Codable {
+    var pluginEnabled: Bool?
+    var codexFound: Bool?
+    var petInstalled: Bool?
+    var marketplaceRoot: String?
+    var bundled: Bool?
 }
 
 /// Trust state of the plugin's hooks as Codex reports it, and whether the desktop app has ever fired them.

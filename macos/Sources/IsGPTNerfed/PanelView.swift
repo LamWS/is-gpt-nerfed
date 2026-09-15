@@ -101,6 +101,7 @@ struct PanelView: View {
     var body: some View {
         VStack(spacing: 14) {
             header
+            setup
             fresh
             threads
             if showSettings { SettingsView() }
@@ -178,6 +179,38 @@ struct PanelView: View {
     private func hooksAliveText(_ s: Snapshot) -> String {
         if let ago = s.hooksLastEventAgo, !ago.isEmpty { return "Hooks alive \(ago)" }
         return "No hook events yet"
+    }
+
+    // MARK: first-run setup (only while something is missing)
+
+    @ViewBuilder private var setup: some View {
+        if let s = store.snapshot, store.lastError == nil, let inst = s.install {
+            if inst.codexFound == false {
+                setupRow("Codex is not installed on this Mac. Install the Codex app, then reopen this panel.", button: nil)
+            } else if inst.pluginEnabled == false {
+                setupRow("The plugin is not registered with Codex yet. Install adds the bundled plugin, the pet and hook trust.",
+                         button: store.installing ? nil : "Install") { Task { await store.installPlugin() } }
+            } else if s.hooks?.state == "untrusted" {
+                setupRow("Codex has not been told to trust the plugin's hooks, so nothing runs in your threads yet.",
+                         button: "Trust hooks") { Task { await store.trustHooks() } }
+            }
+        }
+    }
+
+    private func setupRow(_ text: String, button: String?, action: @escaping () -> Void = {}) -> some View {
+        Group(title: "Setup") {
+            HStack(alignment: .center, spacing: 10) {
+                Circle().fill(Color.orange).frame(width: 7, height: 7)
+                Text(text).font(Type.text).foregroundStyle(.secondary).lineLimit(3)
+                Spacer(minLength: 8)
+                if store.installing {
+                    ProgressView().controlSize(.small)
+                } else if let button {
+                    RowButton(title: button, action: action)
+                }
+            }
+            .padding(.horizontal, 10).padding(.vertical, 8)
+        }
     }
 
     // MARK: fresh session (global probe)

@@ -84,6 +84,13 @@ nothing has been tested there.
 
 ## Install
 
+**Easiest (macOS 26): the app installs the plugin.** Download `IsGPTNerfed-<version>.zip` from Releases, move the app
+to Applications, open it (first launch: right-click → Open, it is ad-hoc signed), click the paw in the menu bar and press
+**Install** in the Setup row. The plugin travels inside the app bundle; Install registers it with Codex, installs the pet
+and records hook trust. Nothing else to run.
+
+**From a checkout (any macOS, no app needed):**
+
 ```bash
 git clone https://github.com/<owner>/is-gpt-nerfed ~/is-gpt-nerfed && cd ~/is-gpt-nerfed && ./install.sh
 ```

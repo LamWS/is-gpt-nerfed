@@ -32,6 +32,13 @@ for s in 16 32 128 256 512; do
   d=$((s*2)); sips -z $d $d "$HERE/build/icon_1024.png" --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
 done
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
+# bundle the plugin as a local marketplace so the app can install itself into Codex (panel → Install)
+MK="$APP/Contents/Resources/marketplace"
+mkdir -p "$MK/.agents/plugins"
+cp -R "$HERE/../plugin" "$MK/plugin"
+cp "$HERE/../.agents/plugins/marketplace.json" "$MK/.agents/plugins/marketplace.json"
+find "$MK" -name '__pycache__' -type d -prune -exec rm -rf {} +
+chmod +x "$MK/plugin/skills/is-gpt-nerfed/scripts/nerfed"
 codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
 echo "built $APP"
 case "${1:-}" in

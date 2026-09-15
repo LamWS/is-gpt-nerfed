@@ -6,7 +6,7 @@ enum DGCError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .notFound: return "dgc not found. Run ./install.sh in the is-gpt-nerfed checkout."
+        case .notFound: return "nerfed not found: the app bundle is incomplete. Rebuild with macos/build.sh or run ./install.sh from a checkout."
         case .failed(let msg): return msg
         }
     }
@@ -22,6 +22,11 @@ enum DGC {
         if let hint = try? String(contentsOfFile: home + "/.codex/is-gpt-nerfed/nerfed_bin", encoding: .utf8) {
             let p = hint.trimmingCharacters(in: .whitespacesAndNewlines)
             if fm.fileExists(atPath: p) { return p }
+        }
+        // the plugin travels inside the app bundle, so a downloaded .app works before anything is installed
+        if let res = Bundle.main.resourcePath {
+            let bundled = res + "/marketplace/plugin/skills/is-gpt-nerfed/scripts/nerfed"
+            if fm.fileExists(atPath: bundled) { return bundled }
         }
         let direct = home + "/is-gpt-nerfed/plugin/skills/is-gpt-nerfed/scripts/nerfed"
         if fm.fileExists(atPath: direct) { return direct }

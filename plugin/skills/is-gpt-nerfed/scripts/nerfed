@@ -1601,6 +1601,7 @@ def demo_snapshot(cfg: dict) -> dict:
             "hooks": {"checked": iso(t0 - 300), "checked_ago": "5m ago", "total": 5, "trusted": 5, "untrusted": 0, "state": "trusted",
                       "error": None, "last_desktop_event": iso(t0 - 12), "last_desktop_event_ago": "12s ago", "desktop_loaded": True,
                       "installed_ago": "2h ago", "desktop_loaded_current": True, "stale_since_install_s": None},
+            "install": {"plugin_enabled": True, "codex_found": True, "pet_installed": True, "marketplace_root": "/Applications/IsGPTNerfed.app/Contents/Resources/marketplace", "bundled": True},
             "account": {"label": "y…@example.com", "plan": "plus", "switched_at": iso(t0 - 2700), "switched_ago": "45m ago",
                         "previous_label": "o…@example.com"},
             "overall": {"status": "alert", "downgraded": 1, "suspicious": 1, "unverified": 1, "running": 0,
@@ -1758,9 +1759,12 @@ def cmd_snapshot(args) -> int:
         log_event("status_change", level="warn" if status in ("alert", "warn") else "info", from_status=state.get("last_status"),
                   to_status=status, message=message, downgraded=downgraded, suspicious=suspicious, unverified=unverified)
         write_json(STATE_PATH, {**state, "last_status": status, "last_message": message, "changed_at": iso()})
+    install = {"plugin_enabled": plugin_enabled_in_config(), "codex_found": bool(codex_bin(cfg)),
+               "pet_installed": os.path.exists(os.path.join(pet_dst_dir(), "pet.json")),
+               "marketplace_root": os.path.dirname(PLUGIN_ROOT), "bundled": "/Contents/Resources/" in PLUGIN_ROOT}
     snap = {"generated": iso(), "version": VERSION, "nerfed_bin": DGC_BIN, "ledger": NERFED_HOME, "config": cfg,
             "hooks_last_event": (last_event or {}).get("ts"), "hooks_last_event_ago": ago(parse_iso((last_event or {}).get("ts"))),
-            "hooks": hooks,
+            "hooks": hooks, "install": install,
             "overall": {"status": status, "downgraded": downgraded, "suspicious": suspicious, "unverified": unverified,
                         "running": running, "message": message},
             "default_model": default_model, "default_effort": default_effort,
