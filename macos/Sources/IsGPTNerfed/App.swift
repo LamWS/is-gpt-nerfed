@@ -1,26 +1,29 @@
 import AppKit
 import SwiftUI
 
-// MARK: - Menu bar icon: template glyph normally, red on any confirmed downgrade, orange while suspicious.
+// MARK: - Menu bar item: the inspector's face as text. Neutral normally, orange when suspicious, red on a
+// confirmed downgrade. Text instead of a glyph so the state is readable at a glance and matches the panel header.
 
-enum MenuBarIcon {
-    static func image(alert: Bool, warn: Bool = false, running: Bool) -> NSImage {
-        let name = (alert || warn) ? "pawprint.fill" : (running ? "pawprint.circle" : "pawprint")
-        let base = NSImage(systemSymbolName: name, accessibilityDescription: "is-gpt-nerfed")!
-        let size = NSImage.SymbolConfiguration(pointSize: 15, weight: .medium)
-        if alert || warn {
-            let colored = size.applying(NSImage.SymbolConfiguration(paletteColors: [alert ? .systemRed : .systemOrange]))
-            let img = base.withSymbolConfiguration(colored) ?? base
-            img.isTemplate = false
-            return img
-        }
-        let img = base.withSymbolConfiguration(size) ?? base
-        img.isTemplate = true
-        return img
+enum MenuBarFace {
+    static func face(alert: Bool, warn: Bool, running: Bool) -> String {
+        if alert { return "(ಠ_ಠ)" }
+        if warn { return "(•_•)" }
+        if running { return "(•o•)" }
+        return "(•ᴗ•)"
+    }
+
+    static func color(alert: Bool, warn: Bool) -> Color {
+        alert ? .red : (warn ? .orange : .primary)
+    }
+
+    static func label(alert: Bool, warn: Bool, running: Bool) -> some View {
+        Text(face(alert: alert, warn: warn, running: running))
+            .font(.system(size: 12, weight: .semibold, design: .rounded))
+            .foregroundStyle(color(alert: alert, warn: warn))
     }
 }
 
-// MARK: - App delegate (accessory app; --preview opens the panel in a window; --render writes a self-portrait PNG)
+// MARK: - App delegate (accessory app; --preview opens the panel in a window; --render writes self-portraits)
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var previewWindow: NSWindow?
@@ -44,8 +47,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Headless self-portrait for verification and README screenshots (ImageRenderer cannot composite Liquid Glass,
-    /// so the panel renders with its flat fallback). Also writes the menu bar glyphs next to the panel image.
+    /// Headless self-portraits for the README (ImageRenderer cannot composite Liquid Glass, so the panel renders
+    /// with its flat fallback). Also writes the three menu bar faces next to the panel image.
     private func render(to path: String) {
         Task { @MainActor in
             let store = Store.shared
@@ -63,22 +66,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
             for (suffix, alert, warn) in [("icon-normal", false, false), ("icon-warn", false, true), ("icon-alert", true, false)] {
-                let icon = MenuBarIcon.image(alert: alert, warn: warn, running: false)
-                let canvas = NSImage(size: NSSize(width: 44, height: 44))
-                canvas.lockFocus()
-                NSColor(calibratedWhite: 0.12, alpha: 1).setFill()
-                NSRect(x: 0, y: 0, width: 44, height: 44).fill()
-                let tinted = icon.copy() as! NSImage
-                if icon.isTemplate {
-                    tinted.lockFocus()
-                    NSColor.white.set()
-                    NSRect(origin: .zero, size: tinted.size).fill(using: .sourceAtop)
-                    tinted.unlockFocus()
-                    tinted.isTemplate = false
-                }
-                tinted.draw(in: NSRect(x: 12, y: 12, width: 20, height: 20), from: .zero, operation: .sourceOver, fraction: 1)
-                canvas.unlockFocus()
-                if let tiff = canvas.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
+                let face = Text(MenuBarFace.face(alert: alert, warn: warn, running: false))
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .foregroundStyle(alert ? Color.red : (warn ? Color.orange : Color.white))
+                    .frame(width: 56, height: 22)
+                    .background(Color(white: 0.12))
+                let renderer = ImageRenderer(content: face)
+                renderer.scale = 2
+                if let img = renderer.nsImage, let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
                    let png = rep.representation(using: .png, properties: [:]) {
                     try? png.write(to: URL(fileURLWithPath: path.replacingOccurrences(of: ".png", with: "-\(suffix).png")))
                 }
@@ -103,7 +98,7 @@ struct IsGPTNerfedApp: App {
         MenuBarExtra {
             PanelView().environment(store)
         } label: {
-            Image(nsImage: MenuBarIcon.image(alert: store.isAlert, warn: store.isWarn, running: store.isRunning))
+            MenuBarFace.label(alert: store.isAlert, warn: store.isWarn, running: store.isRunning)
         }
         .menuBarExtraStyle(.window)
 

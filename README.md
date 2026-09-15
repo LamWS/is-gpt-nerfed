@@ -1,4 +1,4 @@
-<img src="macos/icon.svg" width="96" align="right" alt="">
+<img src="macos/icon.png" width="128" align="right" alt="is-gpt-nerfed app icon: a chip with a skeptical face">
 
 # is-gpt-nerfed
 
@@ -21,7 +21,7 @@ from [ModelTrace](https://github.com/xqy2006/ModelTrace) by xqy2006 (MIT); see *
   <img src="docs/panel-icon-normal.png" width="44" alt="menu bar icon, all clear">
   <img src="docs/panel-icon-warn.png" width="44" alt="menu bar icon, suspicious">
   <img src="docs/panel-icon-alert.png" width="44" alt="menu bar icon, downgraded">
-  <br><sub>Menu bar glyph: all clear · suspicious · downgraded. Panels above are self-rendered sample data (<code>NERFED_DEMO=1 IsGPTNerfed --render</code>); the live panel sits on Liquid Glass.</sub>
+  <br><sub>Menu bar face: all clear · suspicious · downgraded. Panels above are self-rendered sample data (<code>NERFED_DEMO=1 IsGPTNerfed --render</code>); the live panel sits on Liquid Glass.</sub>
 </p>
 
 ## How it works
@@ -98,7 +98,7 @@ trust. Nothing else to run.
 **From a checkout (any macOS, no app needed):**
 
 ```bash
-git clone https://github.com/<owner>/is-gpt-nerfed ~/is-gpt-nerfed && cd ~/is-gpt-nerfed && ./install.sh
+git clone https://github.com/kiyoakii/is-gpt-nerfed ~/is-gpt-nerfed && cd ~/is-gpt-nerfed && ./install.sh
 ```
 
 `install.sh`:
@@ -125,7 +125,7 @@ panel keeps saying "Codex app has not loaded the plugin yet", quit and reopen Co
 Then, in any thread, say `$is-gpt-nerfed` (or `/side $is-gpt-nerfed` to keep it out of your context), or just let the
 schedule run: by default every thread is probed in the background every 8 turns.
 
-Codex also accepts this repository as a git marketplace: `codex plugin marketplace add <owner>/is-gpt-nerfed`, then
+Codex also accepts this repository as a git marketplace: `codex plugin marketplace add kiyoakii/is-gpt-nerfed`, then
 `codex plugin add is-gpt-nerfed@is-gpt-nerfed`; run `./install.sh` from the checked-out copy for trust and doctor.
 
 Uninstall: `./uninstall.sh` (add `--purge` to delete the local ledger).
@@ -165,9 +165,9 @@ Uninstall: `./uninstall.sh` (add `--purge` to delete the local ledger).
 ./macos/build.sh --zip        # dist/IsGPTNerfed-<version>.zip (+ .sha256) for a release
 ```
 
-The app icon comes from `macos/icon.png` (1024×1024) when present, else from `macos/icon.svg` (a lens over a
-downgrade; alternatives in `macos/icons/`). `tools/set_icon.sh some.png` adopts a generated image as icon and plugin logo
-and rebuilds.
+The app icon is `macos/icon.png` (1024×1024); `tools/set_icon.sh some.png` adopts a new image as icon and plugin logo
+and rebuilds. Without it the build falls back to `macos/icon.svg`. The menu bar shows the inspector's face as text,
+`(•ᴗ•)`, which turns `(•_•)` orange when a probe is suspicious and `(ಠ_ಠ)` red on a confirmed downgrade.
 
 Prebuilt zips on the Releases page are ad-hoc signed, not notarized: the first launch needs right-click → Open, or
 `xattr -dr com.apple.quarantine ~/Applications/IsGPTNerfed.app`. The app needs the plugin installed (it runs `nerfed`
