@@ -1,6 +1,6 @@
 <p align="center"><img src="docs/social-preview.png" width="880" alt="is-gpt-nerfed: shrinkflation detector for Codex"></p>
 
-You pick a model in Codex. This tells you whether that model is actually the one answering. **If** it isn't, you get this:
+You pick a model in Codex. This tells you whether that model is actually the one answering. If it isn't, you get this:
 
 <p align="center">
   <img src="docs/nerfed-sticker.png" width="220" alt="">
@@ -20,68 +20,71 @@ You pick a model in Codex. This tells you whether that model is actually the one
 
 ## What it checks
 
-Two signals. Everything runs on your Mac; nothing is uploaded.
+Everything runs on your Mac. Nothing is uploaded.
 
-**Every turn, zero tokens.** Codex records, per turn, which model and reasoning effort it asked for. The plugin
-reads that and flags anything that changed without you changing it: a model swap, a reasoning-effort drop, a hidden
-internal model (such as `gpt-reserve`), a context window that shrank. A move to a newer or larger model (a rollout)
-is reported too, as good news.
+Codex records, for every turn, which model and reasoning effort it asked for. The plugin reads those records after
+each turn and flags what changed without you changing it: a model swap, a lower reasoning effort, a hidden internal
+model such as `gpt-reserve`, a smaller context window. A move to a newer or larger model is reported as well, since
+a rollout can go either way. This costs no tokens.
 
-**On a schedule, three forks.** The session is forked ephemerally three times at its last finished turn, the same
-mechanism as `/side`, invisible in Codex. Each fork is asked for about 300 "random" numbers. Models are bad at
-random, each in its own way, and [ModelTrace](https://github.com/xqy2006/ModelTrace)'s calibrated bank turns that
-into a fingerprint (100 % accuracy with three answers in cross-validation). The verdict compares the fingerprint with
+On a schedule, the plugin also forks your session three times, ephemerally, the way `/side` does, and asks each fork
+for about 300 "random" numbers. A language model picks random numbers with a bias that is characteristic of the
+model. [ModelTrace](https://github.com/xqy2006/ModelTrace)'s calibrated bank turns the three answers into a
+fingerprint (100 % accuracy with three answers in cross-validation), and the verdict compares that fingerprint with
 the model you selected:
 
 | verdict | meaning |
 | --- | --- |
 | Match | the model you selected answered |
-| Suspicious | the fingerprint leans elsewhere, not confidently; it stands until the next probe |
-| Downgrade / Upgrade / Rerouted | confident mismatch: top candidate ≥ 80 %, your model ≤ 20 % |
+| Suspicious | the fingerprint leans elsewhere, but not confidently; it stands until the next probe |
+| Downgrade / Upgrade / Rerouted | a confident mismatch: top candidate at 80 % or more, your model at 20 % or less |
 | Downgraded | Codex's own records show a silent switch; no fingerprint needed |
-| Upgraded | Codex's own records show a move to a newer or larger model (a rollout); good news |
+| Upgraded | Codex's own records show a move to a newer or larger model |
 | Unlisted | your model is not in the fingerprint bank yet |
-| Invalid | no usable answer (tool use, refusal, network); not a verdict: the row keeps its last one and offers Retry |
+| Invalid | no usable answer (tool use, refusal, network); not a verdict, the row keeps its last one and offers Retry |
 
-A mismatch reaches you as a macOS notification, a message in the session, and a red face in the menu bar.
-Match is silent.
+A mismatch reaches you as a macOS notification, a message in the session, and a red face in the menu bar. A match is
+not announced.
 
 ## Install
 
-**App, macOS 26.** One line in Terminal installs the latest release and opens it:
+macOS 26. One line in Terminal installs the latest release and opens it:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/kiyoakii/is-gpt-nerfed/main/install-app.sh | sh
 ```
 
-Or download the disk image from [Releases](https://github.com/kiyoakii/is-gpt-nerfed/releases) and drag IsGPTNerfed to
-Applications; the app is not notarized yet, so macOS blocks that first launch until you allow it under System
-Settings → Privacy & Security.
+You can also download the disk image from [Releases](https://github.com/kiyoakii/is-gpt-nerfed/releases) and drag
+IsGPTNerfed to Applications. The app is not notarized yet, so macOS blocks that first launch until you allow it under
+System Settings → Privacy & Security.
 
-Then click the face in the menu bar and press **Install**: that registers the bundled plugin with Codex and trusts
-its hooks. When a newer release is out, the panel's footer says so and a notification arrives once; click it and the
-app downloads the new build, checks its checksum, replaces itself and relaunches.
+Click the face in the menu bar and press **Install**. That registers the bundled plugin with Codex and trusts its
+hooks. When a newer release is out, the footer says so and a notification arrives once; click it and the app downloads
+the new build, checks its checksum, replaces itself and relaunches.
 
-**Without the app, any macOS.**
+Without the app, on any macOS:
 
 ```bash
 git clone https://github.com/kiyoakii/is-gpt-nerfed ~/is-gpt-nerfed && cd ~/is-gpt-nerfed && ./install.sh
 ```
 
-Say yes when it asks to trust the hooks: Codex runs no hook you have not trusted, and it does not tell you.
+Say yes when it asks to trust the hooks. Codex runs no hook you have not trusted, and it does not tell you.
 
-Needs a Codex with plugin hooks (desktop app or CLI; tested on 0.154) and the system `python3`. Uninstall with `./uninstall.sh`.
+Requires a Codex with plugin hooks (desktop app or CLI; tested on 0.154) and the system `python3`. `./uninstall.sh`
+removes everything.
 
 ## Using it
 
-- **Nothing.** Every session you work in is probed in the background after 30 minutes of activity.
-- **`$is-gpt-nerfed`** in a session probes it now.
-- **Menu bar.** Sessions of the last 48 hours with their last verdict; click one for its report (fingerprint, earlier
-  probes, evidence), right-click for actions. Probe and Retry per session, and *Fresh session*: what a brand-new
-  session gets right now.
-- **Terminal.** `nerfed probe now` (pick a session), `nerfed report`, `nerfed explain <probe>`, `nerfed log --since 2h`.
+Every session you work in is probed in the background after 30 minutes of activity. To probe a session right away,
+say `$is-gpt-nerfed` in it.
 
-Settings live in the app, or `nerfed config set <key> <value>`:
+The menu bar panel lists the sessions of the last 48 hours with their last verdict. Click a session for its report
+(fingerprint, earlier probes, evidence) and right-click for actions. Each session has Probe and Retry, and the Fresh
+session row probes a brand-new session to show what a new session gets right now.
+
+From a terminal: `nerfed probe now` (pick a session), `nerfed report`, `nerfed explain <probe>`, `nerfed log --since 2h`.
+
+Settings are in the app, or `nerfed config set <key> <value>`:
 
 | key | default | |
 | --- | --- | --- |
@@ -95,26 +98,26 @@ Settings live in the app, or `nerfed config set <key> <value>`:
 
 ## Accounts
 
-Sessions are shared between Codex accounts; nerfing may not be. Every probe is tagged with the signed-in account (a
-hash, never the id). After you switch accounts, older verdicts show as "another account" and those sessions are
-probed again.
+Sessions are shared between Codex accounts, and a downgrade may be tied to the account rather than the session.
+Every probe is therefore tagged with the signed-in account (a hash, never the id). After you switch accounts, older
+verdicts show as "another account" and those sessions are probed again.
 
 ## Limits
 
-- "The model you selected" is what Codex asked for. If the server swapped weights and kept the name, only the
-  fingerprint or a shrinking context window can show it.
+- "The model you selected" is the model Codex asked for. If the server swaps the weights and keeps the name, only the
+  fingerprint or a smaller context window can show it.
 - The bank is closed-set: a model outside it is mapped to its nearest look-alike.
 - A probe costs three short answers on your account.
-- A model or effort change made through Codex's own settings is shown as a question ("was that you?"): the
+- A model or effort change made through Codex's own settings is shown as a question ("was that you?"), because the
   plugin cannot tell whether you or Codex changed it.
 - The forks run through a private connection to Codex's app-server, not through the desktop app's own.
 
 ## Privacy
 
-Reads `~/.codex` (session records, models cache; `auth.json` only for an account hash and a masked e-mail). Writes
-`~/.codex/is-gpt-nerfed` (probes, verdicts, `log.jsonl`). The forks are ordinary Codex inference under your account.
-The only network request of its own is one to GitHub every ten minutes for the latest release tag, while the app is
-open; switch it off in Settings and it makes none.
+The plugin reads `~/.codex` (session records, the models cache, and `auth.json` only for an account hash and a masked
+e-mail) and writes to `~/.codex/is-gpt-nerfed` (probes, verdicts, `log.jsonl`). The forks are ordinary Codex
+inference under your account. The only network request of its own is one to GitHub every ten minutes for the latest
+release tag, while the app is open; switch it off in Settings and it makes none.
 
 ## Credits
 
