@@ -42,7 +42,7 @@ the model you selected:
 | Suspicious | the fingerprint leans elsewhere, not confidently; it stands until the next probe |
 | Downgrade / Upgrade / Rerouted | confident mismatch: top candidate ≥ 80 %, your model ≤ 20 % |
 | Downgraded | Codex's own records show a silent switch; no fingerprint needed |
-| Upgraded | Codex's own records show a move to a newer or larger model (a rollout); good news, in green |
+| Upgraded | Codex's own records show a move to a newer or larger model (a rollout); good news |
 | Unlisted | your model is not in the fingerprint bank yet |
 | Invalid | no usable answer (tool use, refusal, network); not a verdict: the row keeps its last one and offers Retry |
 
@@ -57,11 +57,13 @@ Match is silent.
 curl -fsSL https://raw.githubusercontent.com/kiyoakii/is-gpt-nerfed/main/install-app.sh | sh
 ```
 
-(Or download the disk image from [Releases](https://github.com/kiyoakii/is-gpt-nerfed/releases) and drag IsGPTNerfed
-to Applications. The app is not notarized yet, so macOS blocks that first launch: System Settings → Privacy &
-Security → Open Anyway.) Click the face in the menu bar, press **Install**. That registers the bundled plugin with
-Codex and trusts its hooks. Done. When a newer release is out, the panel's footer says so (and a notification arrives
-once); click it and the app downloads the new build, checks its checksum, replaces itself and relaunches.
+Or download the disk image from [Releases](https://github.com/kiyoakii/is-gpt-nerfed/releases) and drag IsGPTNerfed to
+Applications; the app is not notarized yet, so macOS blocks that first launch until you allow it under System
+Settings → Privacy & Security.
+
+Then click the face in the menu bar and press **Install**: that registers the bundled plugin with Codex and trusts
+its hooks. When a newer release is out, the panel's footer says so and a notification arrives once; click it and the
+app downloads the new build, checks its checksum, replaces itself and relaunches.
 
 **Without the app, any macOS.**
 
@@ -71,7 +73,7 @@ git clone https://github.com/kiyoakii/is-gpt-nerfed ~/is-gpt-nerfed && cd ~/is-g
 
 Say yes when it asks to trust the hooks: Codex runs no hook you have not trusted, and it does not tell you.
 
-Needs Codex 0.117 or newer (desktop app or CLI) and the system `python3`. Uninstall with `./uninstall.sh`.
+Needs a Codex with plugin hooks (desktop app or CLI; tested on 0.154) and the system `python3`. Uninstall with `./uninstall.sh`.
 
 ## Using it
 
@@ -92,6 +94,7 @@ Settings live in the app, or `nerfed config set <key> <value>`:
 | `halt_on_mismatch` | `false` | block tools after a mismatch until you say resume |
 | `notify_on_ok`, `announce_ok` | `false` | also report Match |
 | `hide_titles` | `false` | screenshot mode: neutral session names, no account |
+| `check_updates` | `true` | ask GitHub for a newer release every 10 minutes |
 
 ## Accounts
 
@@ -105,6 +108,8 @@ probed again.
   fingerprint or a shrinking context window can show it.
 - The bank is closed-set: a model outside it is mapped to its nearest look-alike.
 - A probe costs three short answers on your account.
+- A model or effort change made through Codex's own settings is shown as a question ("was that you?"): the
+  plugin cannot tell whether you or Codex changed it.
 - The forks run through a private connection to Codex's app-server. If routing depended on the desktop app's own
   connection, `/side $is-gpt-nerfed` inside Codex would be the truer test.
 
