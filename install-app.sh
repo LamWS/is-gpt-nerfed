@@ -27,7 +27,11 @@ fi
 ditto -x -k "$TMP/app.zip" "$TMP/x"
 APP="$(find "$TMP/x" -maxdepth 2 -name '*.app' | head -1)"
 [ -n "$APP" ] || { echo "no .app inside the archive" >&2; exit 1; }
-DEST_DIR="/Applications"; [ -w "$DEST_DIR" ] || DEST_DIR="$HOME/Applications"; mkdir -p "$DEST_DIR"
+# keep an existing installation where it is; otherwise /Applications when writable, else ~/Applications
+if [ -d "$HOME/Applications/IsGPTNerfed.app" ] && [ ! -d "/Applications/IsGPTNerfed.app" ]; then DEST_DIR="$HOME/Applications"
+elif [ -w "/Applications" ]; then DEST_DIR="/Applications"
+else DEST_DIR="$HOME/Applications"; fi
+mkdir -p "$DEST_DIR"
 DEST="$DEST_DIR/IsGPTNerfed.app"
 pkill -x IsGPTNerfed 2>/dev/null || true
 rm -rf "$DEST"; ditto "$APP" "$DEST"
