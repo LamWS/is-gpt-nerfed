@@ -122,7 +122,8 @@ One-time, with an Apple Developer Program membership:
 Every release: `SIGN_IDENTITY="Developer ID Application: Name (TEAMID)" NOTARY_PROFILE=nerfed-notary ./macos/build.sh --release`
 signs the bundle (hardened runtime, timestamp), notarizes the zip, staples the ticket to the app, rebuilds the zip,
 then makes, signs, notarizes and staples the dmg. `spctl -a -vv` must end with `source=Notarized Developer ID`.
-A notarized app opens without the right-click dance, and the self-updater installs it silently.
+A notarized app opens without the Privacy & Security detour. Until then, `install-app.sh` (curl, no quarantine
+flag) is the frictionless install path, and the self-updater strips quarantine from what it installs.
 
 ## Release
 

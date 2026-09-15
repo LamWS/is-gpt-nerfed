@@ -9,7 +9,8 @@
 #
 # Signing: with SIGN_IDENTITY="Developer ID Application: Name (TEAMID)" in the environment the bundle is signed with
 # that certificate, hardened runtime and a secure timestamp (what notarization requires); without it, ad-hoc, and a
-# downloaded copy needs right-click → Open once. Notarization: NOTARY_PROFILE names a keychain profile made once with
+# browser-downloaded copy is blocked on first launch (Privacy & Security → Open Anyway; install-app.sh avoids that).
+# Notarization: NOTARY_PROFILE names a keychain profile made once with
 #   xcrun notarytool store-credentials <profile> --apple-id <email> --team-id <TEAMID> --password <app-specific password>
 set -eu
 SIGN_IDENTITY="${SIGN_IDENTITY:-}"

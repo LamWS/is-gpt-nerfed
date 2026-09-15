@@ -12,6 +12,7 @@
   it downloads the release zip, verifies its sha256, replaces the app (the old copy goes to the Trash) and relaunches
   (`nerfed update-install`). Failed checks are silent. `build.sh --dmg` makes a disk image for first-time downloads;
   `build.sh --release` signs with a Developer ID, notarizes and staples both (SIGN_IDENTITY, NOTARY_PROFILE).
+  `install-app.sh` installs the latest release from Terminal with the checksum verified and no Gatekeeper block.
 - "Open folder in Finder" (right-click) now opens the thread's folder; it used to only activate Finder, which showed
   whatever window was in front.
 - Copy report moved to the row's right-click menu. The prompt-language row left Settings: the probes use

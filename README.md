@@ -50,12 +50,17 @@ Match is silent.
 
 ## Install
 
-**App, macOS 26.** Download the disk image (or zip) from [Releases](https://github.com/kiyoakii/is-gpt-nerfed/releases),
-drag IsGPTNerfed to Applications, open it (right-click → Open the first time if the release is not notarized), click
-the face in the menu bar, press
-**Install**. That registers the bundled plugin with Codex and trusts its hooks. Done. When a newer release is out,
-the panel's footer says so (and a notification arrives once); click it and the app downloads the new build, checks
-its checksum, replaces itself and relaunches.
+**App, macOS 26.** One line in Terminal installs the latest release and opens it:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kiyoakii/is-gpt-nerfed/main/install-app.sh | sh
+```
+
+(Or download the disk image from [Releases](https://github.com/kiyoakii/is-gpt-nerfed/releases) and drag IsGPTNerfed
+to Applications. The app is not notarized yet, so macOS blocks that first launch: System Settings → Privacy &
+Security → Open Anyway.) Click the face in the menu bar, press **Install**. That registers the bundled plugin with
+Codex and trusts its hooks. Done. When a newer release is out, the panel's footer says so (and a notification arrives
+once); click it and the app downloads the new build, checks its checksum, replaces itself and relaunches.
 
 **Without the app, any macOS.**
 
