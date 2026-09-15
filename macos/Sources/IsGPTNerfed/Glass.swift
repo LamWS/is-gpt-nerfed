@@ -47,11 +47,33 @@ struct RowSeparator: View {
     var body: some View { Divider().opacity(0.6).padding(.leading, 10) }
 }
 
-/// Text-only action (Probe / Retry / Resume / Settings / Report / Quit). No icons anywhere in the panel.
+/// Per-row action (Probe / Retry / Resume): a small text capsule, the way System Settings puts an action at the
+/// trailing edge of a list row. Glass in the live panel; a flat capsule in offscreen renders. No accent colour.
+struct RowButton: View {
+    @Environment(\.plainRendering) private var plain
+    let title: String
+    var destructive = false
+    let action: () -> Void
+
+    var body: some View {
+        if plain {
+            Text(title).font(Type.strong).foregroundStyle(destructive ? Color.red : Color.primary)
+                .padding(.horizontal, 10).padding(.vertical, 4)
+                .background(Color.primary.opacity(0.08), in: Capsule())
+        } else {
+            Button(action: action) { Text(title).font(Type.strong) }
+                .buttonStyle(.glass)
+                .controlSize(.small)
+                .tint(destructive ? Color.red : nil)
+        }
+    }
+}
+
+/// Quiet text action for the footer (Settings / Report / Quit). Secondary colour, no accent.
 struct TextButton: View {
     @Environment(\.plainRendering) private var plain
     let title: String
-    var color: Color = .accentColor
+    var color: Color = .secondary
     let action: () -> Void
 
     var body: some View {
