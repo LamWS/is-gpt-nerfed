@@ -14,10 +14,12 @@ extension EnvironmentValues {
     }
 }
 
-/// Type scale: exactly two sizes and two weights.
-///   title  13pt semibold   thread titles, pet name
-///   text   11pt regular    everything else; semibold only for the verdict word and section headers
+/// Type scale: three sizes, two weights.
+///   headline 17pt semibold   the one line next to the face in the header, nothing else
+///   title    13pt semibold   thread titles
+///   text     11pt regular    everything else; semibold only for the verdict word and section headers
 enum Type {
+    static let headline = Font.system(size: 17, weight: .semibold)
     static let title = Font.system(size: 13, weight: .semibold)
     static let text = Font.system(size: 11)
     static let strong = Font.system(size: 11, weight: .semibold)

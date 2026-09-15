@@ -165,23 +165,45 @@ struct PanelView: View {
 
     // MARK: header
 
-    // The face, and beside it the verdict of the moment over one short line per fact (account, hooks, switch).
+    // The face, and beside it: the headline of the moment (17 pt, the panel's one large line: the first part of the
+    // status), the other counts, the last probe, then one quiet line per fact (account, hooks, switch).
     private var header: some View {
-        HStack(alignment: .center, spacing: 12) {
+        let parts = statusWord.components(separatedBy: " · ")
+        return HStack(alignment: .center, spacing: 14) {
             FaceView(alert: store.isAlert, warn: store.isWarn, running: store.isRunning)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(statusWord)
-                    .font(Type.title)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(parts.first ?? "")
+                    .font(Type.headline)
                     .foregroundStyle(store.isAlert ? .red : (store.isWarn ? .orange : .primary))
                     .lineLimit(2)
+                if parts.count > 1 {
+                    Text(parts.dropFirst().joined(separator: " · ")).font(Type.text).foregroundStyle(.secondary).lineLimit(1)
+                }
                 if let (text, attention) = hooksLine, attention {
                     Text(text).font(Type.strong).foregroundStyle(.orange).lineLimit(2)
                 }
+                lastProbeLine
                 ForEach(quietLines, id: \.self) { Text($0).font(Type.text).foregroundStyle(.tertiary).lineLimit(1) }
             }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 2)
+    }
+
+    /// "Last probe · Match · 49m ago": the newest probe of any thread or fresh session.
+    @ViewBuilder private var lastProbeLine: some View {
+        if let p = store.snapshot?.recentProbes.first, store.lastError == nil {
+            HStack(spacing: 4) {
+                Text("Last probe").foregroundStyle(.tertiary)
+                Text("·").foregroundStyle(.tertiary)
+                Text(p.word).font(Type.strong).foregroundStyle(p.staleAccount == true ? Color.secondary : p.tint)
+                if let ago = p.finishedAgo, !ago.isEmpty {
+                    Text("·").foregroundStyle(.tertiary)
+                    Text(ago).monospacedDigit().foregroundStyle(.tertiary)
+                }
+            }
+            .font(Type.text)
+        }
     }
 
     private var statusWord: String {
