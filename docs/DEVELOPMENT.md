@@ -93,7 +93,6 @@ The app also logs to the unified log (Console.app, subsystem `is-gpt-nerfed`).
 | `confirm_uncertain` | `true` | second round when Suspicious |
 | `busy_wait_s` | `600` | how long to wait for a live turn |
 | `hide_titles` | `false` | screenshot mode |
-| `pet_name` | `Inspector Astra` | the persona's name |
 | `codex_bin` | auto | path to the codex binary (found on PATH or inside the ChatGPT/Codex app) |
 
 ## Release
@@ -114,4 +113,4 @@ git marketplace (`codex plugin marketplace add kiyoakii/is-gpt-nerfed`, `codex p
   `nerfed doctor --fork` proves the fork path against the installed Codex with zero inference.
 
 Contributions welcome: detection signals, bank updates from upstream ModelTrace (keep `provenance.json` honest),
-Windows/Linux, translations of Inspector Astra's lines. Keep the panel to its two type sizes and no icons.
+Windows/Linux, translations of the verdict lines. Keep the panel to its two type sizes and no icons.

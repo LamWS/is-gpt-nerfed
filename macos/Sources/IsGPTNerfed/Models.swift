@@ -82,7 +82,6 @@ struct DGCConfig: Codable {
     var confirmUncertain: Bool?
     var hideTitles: Bool?
     var freshFrequency: String?
-    var petName: String
 }
 
 struct ThreadInfo: Codable, Identifiable {

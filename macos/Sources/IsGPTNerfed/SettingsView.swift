@@ -4,7 +4,6 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(Store.self) private var store
     @Environment(\.plainRendering) private var plain
-    @State private var petName = ""
 
     private let frequencies: [(String, String)] = [
         ("manual", "Manually"), ("turns:4", "Every 4 turns"), ("turns:8", "Every 8 turns"), ("turns:16", "Every 16 turns"),
@@ -60,16 +59,6 @@ struct SettingsView: View {
                 row("Sound on a downgrade") { toggle("sound", cfg?.sound ?? true) }
             }
             Group(title: "App") {
-                row("Pet name") {
-                    if plain {
-                        PlainField(text: cfg?.petName ?? "Inspector Astra")
-                    } else {
-                        TextField("Inspector Astra", text: $petName)
-                            .textFieldStyle(.roundedBorder).controlSize(.small).frame(width: 150)
-                            .onSubmit { Task { await store.setConfig("pet_name", petName) } }
-                    }
-                }
-                RowSeparator()
                 row("Hide thread titles and account (for screenshots)") { toggle("hide_titles", cfg?.hideTitles ?? false) }
                 RowSeparator()
                 row("Launch at login") {
@@ -82,8 +71,6 @@ struct SettingsView: View {
                 }
             }
         }
-        .onAppear { petName = store.snapshot?.config.petName ?? "" }
-        .onChange(of: store.snapshot?.config.petName) { _, new in if let new, !new.isEmpty { petName = new } }
     }
 
     // MARK: building blocks

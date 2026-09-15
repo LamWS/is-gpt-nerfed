@@ -123,7 +123,7 @@ struct PanelView: View {
                 .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text(store.snapshot?.config.petName ?? "Inspector Astra").font(Type.title)
+                    Text("is-gpt-nerfed").font(Type.title)
                     if store.snapshot?.demo == true { Text("sample data").font(Type.text).foregroundStyle(.tertiary) }
                 }
                 Text(statusWord)

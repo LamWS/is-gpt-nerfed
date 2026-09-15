@@ -38,7 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if args.contains("--preview") {
             let hosting = NSHostingController(rootView: PanelView().environment(Store.shared))
             let window = NSWindow(contentViewController: hosting)
-            window.title = "Inspector Astra"
+            window.title = "is-gpt-nerfed"
             window.styleMask = [.titled, .closable]
             window.setFrameOrigin(NSPoint(x: 80, y: 120))
             window.makeKeyAndOrderFront(nil)
