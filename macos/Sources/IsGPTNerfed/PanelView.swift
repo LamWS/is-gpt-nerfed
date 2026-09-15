@@ -107,7 +107,7 @@ struct PanelView: View {
             footer
         }
         .padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 10)
-        .frame(width: 420)
+        .frame(width: 440)
         .task { store.start() }
         .onAppear { Task { await store.refresh() } }
     }
@@ -288,6 +288,8 @@ struct ThreadRow: View {
                         }
                     } else if let p = thread.lastProbe {
                         VerdictLine(probe: p)
+                    } else {
+                        Text(thread.due ? "No probe yet · due" : "No probe yet").font(Type.text).foregroundStyle(.tertiary)
                     }
                     if thread.hardEvidence > 0, let ev = thread.lastEvidence {
                         Text("Evidence: \(ev)").font(Type.text).foregroundStyle(.red).lineLimit(2)
@@ -305,9 +307,7 @@ struct ThreadRow: View {
     private var meta: String {
         var parts = ["\(thread.model ?? "?")\(thread.effort.map { " @ \($0)" } ?? "")"]
         if thread.turns > 0 { parts.append(thread.turns == 1 ? "1 turn" : "\(thread.turns) turns") }
-        if thread.lastProbe == nil && !thread.probeRunning { parts.append("no probe yet") }
         if thread.halted { parts.append("halted") }
-        if thread.due { parts.append("probe due") }
         if let ago = thread.updatedAgo, !ago.isEmpty { parts.append("active \(ago)") }
         return parts.joined(separator: " · ")
     }

@@ -55,7 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             for (suffix, settings) in [("", false), ("-settings", true)] {
                 let renderer = ImageRenderer(content: PanelView(showSettings: settings).environment(store).environment(\.plainRendering, true)
-                                                .frame(width: 440).padding(8).background(Color(nsColor: .windowBackgroundColor)))
+                                                .frame(width: 460).padding(8).background(Color(nsColor: .windowBackgroundColor)))
                 renderer.scale = 2
                 if let img = renderer.nsImage, let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
                    let png = rep.representation(using: .png, properties: [:]) {
