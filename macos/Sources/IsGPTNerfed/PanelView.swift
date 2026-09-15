@@ -100,22 +100,25 @@ struct FaceView: View {
     }
 }
 
-/// "Match · gpt-6-astra 100% · 10h ago" as one line, verdict word coloured; dimmed when it cannot vouch for
-/// the signed-in account.
+/// "Match · gpt-6-astra 100% · 10h ago" as one line, verdict word coloured. A verdict from another account is not
+/// one for this account: "Unverified · Match, another account · 10h ago".
 struct VerdictLine: View {
     let probe: ProbeSummary
     var body: some View {
         let stale = probe.staleAccount == true
         HStack(spacing: 4) {
-            Text(probe.word).font(Type.strong).foregroundStyle(stale ? Color.secondary : probe.tint)
-            Text("·").foregroundStyle(.tertiary)
-            Text(probe.detail).foregroundStyle(stale ? .tertiary : .secondary).lineLimit(1)
             if stale {
+                Text("Unverified").font(Type.strong).foregroundStyle(.secondary)
                 Text("·").foregroundStyle(.tertiary)
-                Text(probe.accountState == "unknown" ? "account unknown" : "another account").foregroundStyle(.tertiary).fixedSize()
+                Text(probe.accountState == "unknown" ? "\(probe.word), account unknown" : "\(probe.word), another account")
+                    .foregroundStyle(.tertiary).lineLimit(1)
                     .help(probe.accountState == "unknown"
                           ? "Recorded before accounts were tracked, so it cannot vouch for the signed-in account. Re-probed when the thread is next active."
                           : "Probed while a different Codex account was signed in; it does not vouch for this account. Re-probed when the thread is next active.")
+            } else {
+                Text(probe.word).font(Type.strong).foregroundStyle(probe.tint)
+                Text("·").foregroundStyle(.tertiary)
+                Text(probe.detail).foregroundStyle(.secondary).lineLimit(1)
             }
             if let ago = probe.finishedAgo, !ago.isEmpty {
                 Text("·").foregroundStyle(.tertiary)
@@ -192,13 +195,13 @@ struct PanelView: View {
         .padding(.top, 2)
     }
 
-    /// "Last probe · Match · 49m ago": the newest probe of any thread or fresh session.
+    /// "Last probe · Match · 49m ago": the newest verdict of any thread or fresh session.
     @ViewBuilder private var lastProbeLine: some View {
-        if let p = store.snapshot?.recentProbes.first, store.lastError == nil {
+        if let p = store.snapshot?.lastVerdict, store.lastError == nil {
             HStack(spacing: 4) {
                 Text("Last probe").foregroundStyle(.tertiary)
                 Text("·").foregroundStyle(.tertiary)
-                Text(p.word).font(Type.strong).foregroundStyle(p.staleAccount == true ? Color.secondary : p.tint)
+                Text(p.staleAccount == true ? "Unverified" : p.word).font(Type.strong).foregroundStyle(p.staleAccount == true ? Color.secondary : p.tint)
                 if let ago = p.finishedAgo, !ago.isEmpty {
                     Text("·").foregroundStyle(.tertiary)
                     Text(ago).monospacedDigit().foregroundStyle(.tertiary)
@@ -320,9 +323,10 @@ struct PanelView: View {
         let snap = store.snapshot
         let running = snap?.globalRunning ?? false
         let last = snap?.globalProbe
+        let failure = snap?.globalFailure
         return Group(title: "Fresh session", trailing: "\(snap?.defaultModel ?? "default model")\(snap?.defaultEffort.map { " @ \($0)" } ?? "")") {
             let history = snap?.globalProbes ?? (last.map { [$0] } ?? [])
-            ExpandableRow(canOpen: ReportLines.hasContent(probes: history, evidence: []), toggle: { toggle("fresh") }) {
+            ExpandableRow(canOpen: ReportLines.hasContent(probes: history, evidence: [], failure: failure), toggle: { toggle("fresh") }) {
                 HStack(alignment: .top, spacing: 8) {
                     Circle().fill(last.map { ($0.isFailure || $0.staleAccount == true) ? Color.secondary.opacity(0.35) : $0.tint } ?? Color.secondary.opacity(0.35))
                         .frame(width: 7, height: 7).padding(.top, 4)
@@ -338,18 +342,18 @@ struct PanelView: View {
                             Text("Never probed · a new session, no thread context").font(Type.text).foregroundStyle(.secondary)
                         }
                     } report: {
-                        ReportLines(probes: history, evidence: [], reportText: snap?.globalReportText)
+                        ReportLines(probes: history, evidence: [], failure: failure, reportText: snap?.globalReportText)
                     }
                     Spacer(minLength: 8)
                     if !running {
-                        RowButton(title: last?.retryable == true ? "Retry" : "Probe") { store.probeFresh() }
+                        RowButton(title: failure?.retryable == true ? "Retry" : "Probe") { store.probeFresh() }
                             .help("Start brand-new ephemeral sessions and fingerprint what a new session gets")
                     }
                 }
                 .padding(.horizontal, 10).padding(.vertical, 7)
             }
             .contextMenu {
-                if !running { Button(last?.retryable == true ? "Retry the probe" : "Probe now") { store.probeFresh() } }
+                if !running { Button(failure?.retryable == true ? "Retry the probe" : "Probe now") { store.probeFresh() } }
                 if let r = snap?.globalReportText { Button("Copy report") { store.copy(r) } }
             }
         }
@@ -413,10 +417,11 @@ struct ReportLines: View {
     @Environment(Store.self) private var store
     let probes: [ProbeSummary]
     let evidence: [EvidenceInfo]
+    var failure: ProbeSummary? = nil
     let reportText: String?
 
-    static func hasContent(probes: [ProbeSummary], evidence: [EvidenceInfo]) -> Bool {
-        !probes.isEmpty || !evidence.isEmpty
+    static func hasContent(probes: [ProbeSummary], evidence: [EvidenceInfo], failure: ProbeSummary? = nil) -> Bool {
+        !probes.isEmpty || !evidence.isEmpty || failure != nil
     }
 
     var body: some View {
@@ -437,6 +442,10 @@ struct ReportLines: View {
                 }
             } else {
                 Text("No probe yet").foregroundStyle(.tertiary)
+            }
+            if let f = failure {  // the tool's own failure, not a verdict: what went wrong, and when
+                fact("Attempt", (["failed " + (f.finishedAgo ?? ""), f.errors?.first ?? "no usable answer"]
+                                 + ((f.retries ?? 0) > 0 ? [f.retries == 1 ? "retried once" : "retried \(f.retries ?? 0)×"] : [])).joined(separator: " · "))
             }
             ForEach(Array(probes.dropFirst().prefix(4))) { p in
                 HStack(spacing: 4) {
@@ -523,7 +532,7 @@ struct ThreadRow: View {
     private var history: [ProbeSummary] { thread.probes ?? (thread.lastProbe.map { [$0] } ?? []) }
 
     var body: some View {
-        ExpandableRow(canOpen: ReportLines.hasContent(probes: history, evidence: thread.evidence ?? []), toggle: toggle) {
+        ExpandableRow(canOpen: ReportLines.hasContent(probes: history, evidence: thread.evidence ?? [], failure: thread.lastFailure), toggle: toggle) {
             HStack(alignment: .center, spacing: 10) {
                 HStack(alignment: .top, spacing: 8) {
                     Circle().fill(dot).frame(width: 7, height: 7).padding(.top, 5)
@@ -551,7 +560,7 @@ struct ThreadRow: View {
                                 }
                             }
                         } report: {
-                            ReportLines(probes: history, evidence: thread.evidence ?? [], reportText: thread.reportText)
+                            ReportLines(probes: history, evidence: thread.evidence ?? [], failure: thread.lastFailure, reportText: thread.reportText)
                         }
                     }
                 }
@@ -562,7 +571,7 @@ struct ThreadRow: View {
         }
         .contextMenu {
             if !thread.probeRunning, !thread.halted {
-                Button(thread.lastProbe?.retryable == true ? "Retry the probe" : "Probe now") { store.probe(thread) }
+                Button(thread.lastFailure?.retryable == true ? "Retry the probe" : "Probe now") { store.probe(thread) }
             }
             if let r = thread.reportText { Button("Copy report") { store.copy(r) } }
             if let cwd = thread.cwd, !cwd.isEmpty { Button("Reveal folder in Finder") { store.reveal(cwd) } }
@@ -584,7 +593,7 @@ struct ThreadRow: View {
             RowButton(title: "Resume", destructive: true) { Task { await store.resume(thread) } }
                 .help("Clear the halt (work tools are denied in this thread)")
         } else {
-            RowButton(title: thread.lastProbe?.retryable == true ? "Retry" : "Probe") { store.probe(thread) }
+            RowButton(title: thread.lastFailure?.retryable == true ? "Retry" : "Probe") { store.probe(thread) }
                 .help("Fork this thread ephemerally (3 parallel forks) and fingerprint the answering model")
         }
     }

@@ -1496,7 +1496,7 @@ def cmd_hook(args) -> int:
         if st["kind"] in ("unknown", "side") or ev == "SessionStart":
             link_session(st)
         if ev == "SessionStart":
-            log_event("session_start", sid=sid, kind=st.get("kind"), model=payload.get("model"), cwd=payload.get("cwd"),
+            log_event("session_start", sid=sid, session_kind=st.get("kind"), model=payload.get("model"), cwd=payload.get("cwd"),
                       source=payload.get("source"), account=acct["id"])
         if ev == "UserPromptSubmit":
             st["turns"] = int(st.get("turns") or 0) + 1
@@ -1695,10 +1695,17 @@ def probe_line(p: dict) -> str:
         parts.append(f"{p['elapsed_s']:.0f} s")
     if p.get("finished_ago"):
         parts.append(p["finished_ago"])
-    if p.get("stale_account"):
-        parts.append("account unknown" if p.get("account_state") == "unknown" else "another account")
+    if p.get("stale_account"):  # a verdict from another account is not one for this account
+        parts[0] = "Unverified"
+        parts.insert(1, f"{word}, account unknown" if p.get("account_state") == "unknown" else f"{word}, another account")
     parts.append(f"probe {p.get('id')}")
     return " · ".join(parts)
+
+
+def probe_row_valid(r: dict) -> bool:
+    """A probe that produced a verdict. A failed attempt (Invalid: no usable answer, transport error) is the tool's
+    own problem, not information about the model; it only asks for a Retry."""
+    return r.get("status") != "failed" and r.get("verdict") not in (None, "INVALID")
 
 
 def evidence_entries(evs: list, active: list, limit: int = 8) -> list[dict]:
@@ -1710,18 +1717,18 @@ def evidence_entries(evs: list, active: list, limit: int = 8) -> list[dict]:
              "active": (e.get("kind"), e.get("ts")) in keys} for e in rows][::-1]
 
 
-def report_text_for(title: str, model: str | None, effort: str | None, probes: list[dict], evidence: list[dict]) -> str:
+def report_text_for(title: str, model: str | None, effort: str | None, probes: list[dict], evidence: list[dict],
+                    failure: dict | None = None) -> str:
     """Plain-text report of one thread (what 'Copy report' puts on the clipboard)."""
     lines = [f"is-gpt-nerfed · {title} · {model or '?'}" + (f" @ {effort}" if effort else "")]
     for i, p in enumerate(probes):
         lines.append(("Last probe" if i == 0 else "Earlier") + " · " + probe_line(p))
-        if i == 0 and p.get("results") and p.get("verdict") not in ("INVALID", None):
+        if i == 0 and p.get("results") and not p.get("stale_account"):
             lines.append("Fingerprint · " + " · ".join(f"{r.get('model')} {(r.get('probability') or 0):.0%}" for r in p["results"]))
-        if i == 0:
-            for err in p.get("errors") or []:
-                lines.append(f"Problem · {err}")
     if not probes:
         lines.append("No probe yet")
+    if failure:
+        lines.append("Last attempt · " + probe_line(failure))
     for e in evidence:
         lines.append(f"Evidence · {e['text']}" + (f" · {e['ago']}" if e.get("ago") else "") + ("" if e.get("active", True) else " · reverted"))
     return "\n".join(lines)
@@ -1771,10 +1778,10 @@ def demo_snapshot(cfg: dict) -> dict:
                 "is_suspicious": verdict == "SUSPICIOUS", "retryable": status == "failed" or verdict == "INVALID", "retries": retries}
 
     def thread(tid, title, model, effort, turns, ago_s, last, hard=0, soft=0, ev=None, due=False, running=False, halted=False,
-               probes=None, evidence=None):
+               probes=None, evidence=None, failure=None):
         stale = bool(last and last.get("stale_account"))
         return {"id": tid, "title": title, "cwd": "/Users/you/code/" + tid, "model": model, "effort": effort, "updated_ts": t0 - ago_s,
-                "probes": probes if probes is not None else ([last] if last else []), "evidence": evidence or [],
+                "probes": probes if probes is not None else ([last] if last else []), "evidence": evidence or [], "last_failure": failure,
                 "evidence_history": len(evidence or []), "last_evidence_ago": (evidence or [{}])[0].get("ago") if ev else None,
                 "updated": iso(t0 - ago_s), "updated_ago": ago(t0 - ago_s), "active": ago_s < 15 * 60, "turns": turns,
                 "turns_since_probe": min(turns, 5), "due": due or stale, "probe_running": running, "halted": halted, "requested": False,
@@ -1799,14 +1806,16 @@ def demo_snapshot(cfg: dict) -> dict:
                          {"text": "Settings: effort xhigh → medium · was that you?", "ts": iso(t0 - 9000), "ago": ago(t0 - 9000), "severity": "soft", "active": False}]),
         thread("ci-flaky", "Investigate flaky CI on main", "gpt-6-astra", "high", 6, 300, ci_last),
         thread("oauth", "Add OAuth device flow", "gpt-6-astra", "max", 22, 720,
-               probe("c3d4e5f6a7", "oauth", "INVALID", status="failed", pred=None, p=None, p_exp=None, n=0, errors=["codex thread/fork timed out after 45s"], retries=1, ago_s=1200)),
+               probe("c3d4e5f6a7", "oauth", "MATCH", p=1.0, margin=0.0, ago_s=10800),
+               failure=probe("c3d4e5f6a8", "oauth", "INVALID", status="failed", pred=None, p=None, p_exp=None, n=0,
+                             errors=["codex thread/fork timed out after 45s"], retries=1, ago_s=1200)),
         thread("pg17", "Migrate to Postgres 17", "gpt-5.6-sol", "high", 9, 3600, pg_probes[0], probes=pg_probes),
         thread("relnotes", "Write release notes v2.3", "gpt-6-astra", "medium", 3, 10800, None, due=True),
     ]
     fresh = probe("e5f6a7b8c9", None, "MATCH", p=1.0, margin=0.0, ago_s=1800, mode="fresh")
     fresh_probes = [fresh, probe("f6a7b8c9d0", None, "MATCH", p=1.0, margin=0.0, ago_s=5400, mode="fresh")]
     for t in threads:
-        t["report_text"] = report_text_for(t["title"], t["model"], t["effort"], t["probes"], t["evidence"])
+        t["report_text"] = report_text_for(t["title"], t["model"], t["effort"], t["probes"], t["evidence"], t.get("last_failure"))
     recent = [threads[0]["last_probe"], threads[1]["last_probe"], threads[2]["last_probe"], fresh, threads[3]["last_probe"]] + pg_probes[1:]
     return {"generated": iso(), "version": VERSION, "nerfed_bin": DGC_BIN, "ledger": "~/.codex/is-gpt-nerfed", "config": cfg,
             "hooks_last_event": iso(t0 - 12), "hooks_last_event_ago": "12s ago",
@@ -1821,6 +1830,7 @@ def demo_snapshot(cfg: dict) -> dict:
                         "message": "1 downgraded · 1 suspicious · 1 unverified"},
             "default_model": "gpt-6-astra", "default_effort": "high", "global_probe": fresh, "global_running": False, "global_alert": False,
             "global_probes": fresh_probes, "global_report_text": report_text_for("Fresh session", "gpt-6-astra", "high", fresh_probes, []),
+            "global_failure": None, "last_verdict": pay_last,
             "threads": threads, "recent_probes": recent, "demo": True}
 
 
@@ -1921,18 +1931,19 @@ def build_snapshot(cfg: dict, hours: float = 48.0) -> dict:
         t["last_evidence_ago"] = ago(parse_iso(active[-1].get("ts"))) if active else None
         t["evidence"] = evidence_entries(st.get("evidence") or [], active)
     index_rows = list(iter_jsonl(PROBES_INDEX))
-    latest: dict[str, dict] = {}
     by_thread: dict[str, list] = {}
     for row in index_rows:
         if row.get("thread_id"):
-            latest[row["thread_id"]] = row
             by_thread.setdefault(row["thread_id"], []).append(row)
     out_threads = []
     downgraded = running = suspicious = unverified = 0
     for t in threads.values():
-        lp = latest.get(t["id"])
-        t["last_probe"] = probe_summary(lp, acct["id"]) if lp else None
-        t["probes"] = [probe_summary(r, acct["id"]) for r in by_thread.get(t["id"], [])[-5:]][::-1]
+        rows = by_thread.get(t["id"], [])
+        valid = [r for r in rows if probe_row_valid(r)]
+        t["last_probe"] = probe_summary(valid[-1], acct["id"]) if valid else None  # the verdict
+        failed = rows[-1] if rows and not probe_row_valid(rows[-1]) else None      # a newer failed attempt: Retry
+        t["last_failure"] = probe_summary(failed, acct["id"]) if failed else None
+        t["probes"] = [probe_summary(r, acct["id"]) for r in valid[-5:]][::-1]
         t.setdefault("evidence", [])
         stale = bool(t["last_probe"] and t["last_probe"]["stale_account"])
         t["unverified"] = stale  # verdict obtained under another Codex account: says nothing about this one
@@ -1950,7 +1961,11 @@ def build_snapshot(cfg: dict, hours: float = 48.0) -> dict:
     evs = tail_jsonl(EVENTS_PATH, 1)
     last_event = evs[0] if evs else None
     fresh_rows = [r for r in index_rows if r.get("mode") == "fresh"]
-    global_probe = probe_summary(fresh_rows[-1], acct["id"]) if fresh_rows else None
+    fresh_valid = [r for r in fresh_rows if probe_row_valid(r)]
+    global_probe = probe_summary(fresh_valid[-1], acct["id"]) if fresh_valid else None
+    global_failure = probe_summary(fresh_rows[-1], acct["id"]) if fresh_rows and not probe_row_valid(fresh_rows[-1]) else None
+    valid_rows = [r for r in index_rows if probe_row_valid(r)]
+    last_verdict = probe_summary(valid_rows[-1], acct["id"]) if valid_rows else None
     global_stale = bool(global_probe and global_probe["stale_account"])
     global_alert = bool(global_probe and global_probe["is_downgrade"] and not global_stale)
     fr = fresh_running()
@@ -1979,9 +1994,10 @@ def build_snapshot(cfg: dict, hours: float = 48.0) -> dict:
             t["cwd"] = None
         account_label = "account hidden"
     for t in out_threads:  # the in-place report behind each row (and what Copy report puts on the clipboard)
-        t["report_text"] = report_text_for(t["title"], t.get("model"), t.get("effort"), t.get("probes") or [], t.get("evidence") or [])
-    global_probes = [probe_summary(r, acct["id"]) for r in fresh_rows[-5:]][::-1]
-    global_report_text = report_text_for("Fresh session", default_model, default_effort, global_probes, [])
+        t["report_text"] = report_text_for(t["title"], t.get("model"), t.get("effort"), t.get("probes") or [], t.get("evidence") or [],
+                                           t.get("last_failure"))
+    global_probes = [probe_summary(r, acct["id"]) for r in fresh_valid[-5:]][::-1]
+    global_report_text = report_text_for("Fresh session", default_model, default_effort, global_probes, [], global_failure)
     hooks = hooks_status(cfg)
     state = read_json(STATE_PATH, {}) or {}
     if state.get("last_status") != status or state.get("last_message") != message:
@@ -1997,7 +2013,8 @@ def build_snapshot(cfg: dict, hours: float = 48.0) -> dict:
                         "running": running, "message": message},
             "default_model": default_model, "default_effort": default_effort,
             "global_probe": global_probe, "global_running": bool(fr), "global_alert": global_alert,
-            "global_probes": global_probes, "global_report_text": global_report_text,
+            "global_probes": global_probes, "global_report_text": global_report_text, "global_failure": global_failure,
+            "last_verdict": last_verdict,
             "account": {"label": account_label, "plan": acct["plan"], "switched_at": acct.get("switched_at"),
                         "switched_ago": ago(acct.get("switched_ts")) if acct.get("switched_ts") and now() - float(acct["switched_ts"]) < 86400 else None,
                         "previous_label": (acct.get("previous") or {}).get("label")},

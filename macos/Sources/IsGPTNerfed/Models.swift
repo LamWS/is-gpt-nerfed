@@ -20,6 +20,8 @@ struct Snapshot: Codable {
     var globalAlert: Bool?
     var globalProbes: [ProbeSummary]?
     var globalReportText: String?
+    var globalFailure: ProbeSummary?     // a failed fresh-session attempt newer than the last verdict (Retry)
+    var lastVerdict: ProbeSummary?       // the newest probe of any kind that produced a verdict
     var account: AccountInfo?
     var threads: [ThreadInfo]
     var recentProbes: [ProbeSummary]
@@ -110,7 +112,8 @@ struct ThreadInfo: Codable, Identifiable {
     var evidenceHistory: Int?
     var lastEvidence: String?
     var lastEvidenceAgo: String?
-    var lastProbe: ProbeSummary?
+    var lastProbe: ProbeSummary?         // the verdict: the newest probe that produced one
+    var lastFailure: ProbeSummary?       // a failed attempt newer than that verdict: only asks for Retry
     var probes: [ProbeSummary]?          // this thread's probe history, newest first (the in-place report)
     var evidence: [EvidenceInfo]?        // hard and soft findings, newest first, reverted ones included
     var reportText: String?              // plain text of the report, for the clipboard

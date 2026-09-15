@@ -84,7 +84,8 @@ final class Store {
         let now = Date()
         for (id, since) in pendingProbes {
             guard let i = snap.threads.firstIndex(where: { $0.id == id }) else { pendingProbes[id] = nil; continue }
-            let finishedAfter = snap.threads[i].lastProbe?.finished.flatMap(parseISO).map { $0 > since } ?? false
+            let t = snap.threads[i]
+            let finishedAfter = [t.lastProbe?.finished, t.lastFailure?.finished].compactMap { $0 }.compactMap(parseISO).contains { $0 > since }
             if snap.threads[i].probeRunning || finishedAfter || now.timeIntervalSince(since) > pendingTimeout {
                 pendingProbes[id] = nil
             } else {
@@ -93,7 +94,7 @@ final class Store {
             }
         }
         if let since = pendingFresh {
-            let finishedAfter = snap.globalProbe?.finished.flatMap(parseISO).map { $0 > since } ?? false
+            let finishedAfter = [snap.globalProbe?.finished, snap.globalFailure?.finished].compactMap { $0 }.compactMap(parseISO).contains { $0 > since }
             if snap.globalRunning == true || finishedAfter || now.timeIntervalSince(since) > pendingTimeout {
                 pendingFresh = nil
             } else {

@@ -41,7 +41,7 @@ the model you selected:
 | Downgrade / Upgrade / Rerouted | confident mismatch: top candidate ≥ 80 %, your model ≤ 20 % |
 | Downgraded | Codex's own records show a silent switch; no fingerprint needed |
 | Unlisted | your model is not in the fingerprint bank yet |
-| Invalid | no usable answer (tool use, refusal, network); Retry is offered |
+| Invalid | no usable answer (tool use, refusal, network); not a verdict: the row keeps its last one and offers Retry |
 
 A mismatch reaches you as a macOS notification, a message in the thread, and a red face in the menu bar.
 Match is silent.

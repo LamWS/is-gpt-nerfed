@@ -7,6 +7,11 @@
   else moves. Right-click for Probe, Copy report, Reveal folder. Settings is a page of its own. Fresh session sits
   below the threads; the header is the chip face with one short line per fact; the panel is a little narrower.
   The Report window is gone (the report lives in the rows; `nerfed report` remains).
+- Fixed: the SessionStart hook crashed (silently, in the fail-safe) on a keyword collision, so session starts were
+  not logged.
+- A failed attempt (Invalid) is no longer shown as a verdict: the row keeps its last verdict and offers Retry; the
+  report notes the attempt. A verdict from another account reads "Unverified · Match, another account"
+  instead of a greyed-out Match.
 - Probes: a Suspicious first round no longer triggers a second one by default (`confirm_uncertain` is opt in), so a
   probe costs three answers.
 - Scanner: Codex's usage-limit snapshot in the rollout is not read as a serving signal (it is the last limit family

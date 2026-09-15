@@ -594,6 +594,32 @@ class SnapshotReportTests(unittest.TestCase):
         self.assertEqual(line, "Downgrade · gpt-5.6-luna 91%, declared 3% · 3 of 3 answers · 41 s · 4m ago · probe abc")
         failed = dgc.probe_line({"id": "def", "verdict": "INVALID", "status": "failed", "errors": ["fork timed out"], "retries": 1})
         self.assertEqual(failed, "Invalid · fork timed out · retried once · probe def")
+        stale = dgc.probe_line({"id": "ghi", "verdict": "MATCH", "prediction": "gpt-5.6-sol", "probability": 1.0, "stale_account": True, "account_state": "other"})
+        self.assertTrue(stale.startswith("Unverified · Match, another account · "), stale)
+
+    def test_session_start_hook_runs_to_the_end(self):
+        # regression: log_event("session_start", kind=...) collided with log_event's own `kind` parameter and every
+        # SessionStart hook died in the fail-safe (exit 0, nothing recorded)
+        errors = os.path.join(dgc.NERFED_HOME, "errors.log")
+        before = open(errors).read() if os.path.exists(errors) else ""
+        with mock.patch.object(dgc, "link_session", side_effect=lambda st: st.update(kind="main")):
+            run_hook({"session_id": "start-thread-1", "cwd": TMP, "model": "gpt-6-astra", "hook_event_name": "SessionStart", "source": "startup"})
+        after = open(errors).read() if os.path.exists(errors) else ""
+        self.assertEqual(after, before, "the SessionStart hook must not crash")
+        events = [e for e in dgc.iter_jsonl(os.path.join(dgc.NERFED_HOME, "log.jsonl")) if e.get("kind") == "session_start"]
+        self.assertTrue(events and events[-1].get("sid") == "start-thread-1" and events[-1].get("session_kind") == "main")
+
+    def test_failed_attempt_is_not_a_verdict(self):
+        snap = json.loads(run_cli(["snapshot", "--json", "--demo"])[1])
+        t = next(t for t in snap["threads"] if t["id"] == "oauth")
+        self.assertEqual(t["last_probe"]["verdict"], "MATCH", "the row keeps the last verdict")
+        self.assertEqual(t["last_failure"]["verdict"], "INVALID")
+        self.assertTrue(t["last_failure"]["retryable"])
+        self.assertEqual([p["verdict"] for p in t["probes"]], ["MATCH"], "failed attempts stay out of the history")
+        self.assertIn("Last attempt · Invalid · codex thread/fork timed out", t["report_text"])
+        self.assertEqual(snap["last_verdict"]["id"], "a1b2c3d4e5")
+        self.assertFalse(dgc.probe_row_valid({"status": "failed", "verdict": "INVALID"}))
+        self.assertTrue(dgc.probe_row_valid({"status": "done", "verdict": "MATCH"}))
 
 
 if __name__ == "__main__":
