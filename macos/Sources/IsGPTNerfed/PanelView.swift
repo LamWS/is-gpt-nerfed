@@ -165,29 +165,31 @@ struct PanelView: View {
 
     // MARK: header
 
-    // The face, and beside it: the headline of the moment (17 pt, the panel's one large line: the first part of the
-    // status), the other counts, the last probe, then one quiet line per fact (account, hooks, switch).
+    // A centred hero: the face over the headline of the moment (17 pt), the other counts, the last probe and the
+    // quiet facts, so the header is balanced whatever the length of the headline.
     private var header: some View {
         let parts = statusWord.components(separatedBy: " · ")
-        return HStack(alignment: .center, spacing: 14) {
+        return VStack(spacing: 3) {
             FaceView(alert: store.isAlert, warn: store.isWarn, running: store.isRunning)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(parts.first ?? "")
-                    .font(Type.headline)
-                    .foregroundStyle(store.isAlert ? .red : (store.isWarn ? .orange : .primary))
-                    .lineLimit(2)
-                if parts.count > 1 {
-                    Text(parts.dropFirst().joined(separator: " · ")).font(Type.text).foregroundStyle(.secondary).lineLimit(1)
-                }
-                if let (text, attention) = hooksLine, attention {
-                    Text(text).font(Type.strong).foregroundStyle(.orange).lineLimit(2)
-                }
-                lastProbeLine
-                ForEach(quietLines, id: \.self) { Text($0).font(Type.text).foregroundStyle(.tertiary).lineLimit(1) }
+                .padding(.bottom, 5)
+            Text(parts.first ?? "")
+                .font(Type.headline)
+                .foregroundStyle(store.isAlert ? .red : (store.isWarn ? .orange : .primary))
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+            if parts.count > 1 {
+                Text(parts.dropFirst().joined(separator: " · ")).font(Type.text).foregroundStyle(.secondary).lineLimit(1)
             }
-            Spacer(minLength: 0)
+            if let (text, attention) = hooksLine, attention {
+                Text(text).font(Type.strong).foregroundStyle(.orange).lineLimit(2).multilineTextAlignment(.center)
+            }
+            lastProbeLine
+            if !quietLines.isEmpty {
+                Text(quietLines.joined(separator: " · ")).font(Type.text).foregroundStyle(.tertiary).lineLimit(2).multilineTextAlignment(.center)
+            }
         }
-        .padding(.horizontal, 2)
+        .frame(maxWidth: .infinity)
+        .padding(.top, 2)
     }
 
     /// "Last probe · Match · 49m ago": the newest probe of any thread or fresh session.
