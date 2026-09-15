@@ -348,11 +348,11 @@ struct ThreadRow: View {
                         Text(thread.due ? "No probe yet · due" : "No probe yet").font(Type.text).foregroundStyle(.tertiary)
                     }
                     if thread.hardEvidence > 0, let ev = thread.lastEvidence {
-                        Text(ev).font(Type.text).foregroundStyle(.red).lineLimit(2)
-                            .help("Found in the thread's own rollout file, independent of any probe. nerfed evidence --thread \(thread.id) lists everything.")
+                        Text(ev + (thread.lastEvidenceAgo.map { " · \($0)" } ?? "")).font(Type.text).foregroundStyle(.red).lineLimit(2)
+                            .help("Found in the thread's own records, independent of any probe, and still in effect. nerfed evidence --thread \(thread.id) lists everything.")
                     } else if thread.softEvidence > 0, let ev = thread.lastEvidence {
-                        Text("\(ev) · was that you?").font(Type.text).foregroundStyle(.orange).lineLimit(2)
-                            .help("Applied through thread settings: either you changed it, or the app did it for you. nerfed evidence --thread \(thread.id) lists everything.")
+                        Text(ev + (thread.lastEvidenceAgo.map { " · \($0)" } ?? "")).font(Type.text).foregroundStyle(.orange).lineLimit(2)
+                            .help("Applied through thread settings and still in effect: either you changed it, or Codex did (it lowers effort automatically at usage limits). nerfed evidence --thread \(thread.id) lists everything.")
                     }
                 }
             }

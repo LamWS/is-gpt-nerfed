@@ -478,12 +478,14 @@ def scan_rollout(path: str, scan: dict, hidden=frozenset(), cap_bytes: int = 64 
     new_ev: list[dict] = []
 
     def add(kind: str, severity: str, detail: str, ts=None, turn=None):
-        key = f"{kind}|{detail}"
+        key = f"{kind}|{detail}|{ts}"
         keys = scan.setdefault("ev_keys", [])
         if key in keys:
             return
         keys.append(key)
-        new_ev.append({"ts": ts or iso(), "kind": kind, "severity": severity, "detail": detail, "turn_id": turn})
+        usage = scan.get("usage_percent")
+        new_ev.append({"ts": ts or iso(), "kind": kind, "severity": severity, "detail": detail, "turn_id": turn,
+                       "usage_percent": usage})
 
     try:
         size = os.path.getsize(path)
@@ -564,6 +566,10 @@ def scan_rollout(path: str, scan: dict, hidden=frozenset(), cap_bytes: int = 64 
                         add("service_tier_change", "info", f"service tier {scan['tier']} → {tier}", ts)
                         scan["tier"] = tier
             elif et == "token_count":
+                rl = p.get("rate_limits") or {}
+                pct = (rl.get("primary") or {}).get("used_percent")
+                if isinstance(pct, (int, float)):
+                    scan["usage_percent"] = pct
                 ctx = (p.get("info") or {}).get("model_context_window")
                 if isinstance(ctx, int) and ctx > 0:
                     if scan["ctx"] is None:
@@ -917,8 +923,9 @@ def parent_hard_evidence(thread_id: str | None, rollout_hint: str | None = None)
             st["transcript_path"] = rp
             for e in scan_rollout(rp, st["scan"], hidden_models()):
                 st["evidence"].append(e)
-        hard = [e for e in st.get("evidence") or [] if e.get("severity") == "hard"]
-        soft = [e for e in st.get("evidence") or [] if e.get("severity") == "soft"]
+        active = active_evidence(st.get("evidence") or [])
+        hard = [e for e in active if e.get("severity") == "hard"]
+        soft = [e for e in active if e.get("severity") == "soft"]
     return hard, soft
 
 
@@ -1559,6 +1566,26 @@ def cmd_resume(args) -> int:
 # ------------------------------------------------------------------------------------ reporting
 
 
+EVIDENCE_DIMENSION = {"silent_model_change": "model", "applied_model_change": "model", "hidden_model": "model",
+                      "silent_effort_change": "effort", "applied_effort_change": "effort",
+                      "context_window_change": "ctx", "service_tier_change": "tier"}
+
+
+def active_evidence(evs: list) -> list:
+    """Findings that still describe the current state: for each dimension (model, effort, context window, tier)
+    only the latest change counts, so a downgrade that was later reverted stops being an alert (it stays in the
+    log and report)."""
+    latest: dict = {}
+    for e in evs or []:
+        latest[EVIDENCE_DIMENSION.get(e.get("kind"), e.get("kind"))] = e
+    return [e for e in latest.values() if e.get("severity") in ("hard", "soft")]
+
+
+def at_usage_limit(e: dict) -> bool:
+    pct = e.get("usage_percent")
+    return isinstance(pct, (int, float)) and pct >= 90
+
+
 def compact_evidence(e: dict) -> str:
     """One short line for the panel (the full sentence stays in the ledger, report and pet quotes)."""
     kind, detail = e.get("kind") or "", e.get("detail") or ""
@@ -1571,11 +1598,11 @@ def compact_evidence(e: dict) -> str:
     if kind == "silent_model_change" and a:
         return f"Silent model change: {a} → {b}"
     if kind == "applied_model_change" and a:
-        return f"Settings: model {a} → {b}"
+        return f"Codex switched model {a} → {b} at the usage limit ({e.get('usage_percent'):.0f}%)" if at_usage_limit(e) else f"Settings: model {a} → {b} · was that you?"
     if kind == "silent_effort_change" and a:
         return f"Silent effort change: {a} → {b}"
     if kind == "applied_effort_change" and a:
-        return f"Settings: effort {a} → {b}"
+        return f"Codex switched effort {a} → {b} at the usage limit ({e.get('usage_percent'):.0f}%)" if at_usage_limit(e) else f"Settings: effort {a} → {b} · was that you?"
     if kind == "hidden_model":
         m2 = re.search(r"model (\S+) ran", detail)
         return f"Hidden model ran: {m2.group(1)}" if m2 else "Hidden model ran a turn"
@@ -1804,11 +1831,12 @@ def build_snapshot(cfg: dict, hours: float = 48.0) -> dict:
         t["_probe_note"] = (running or {}).get("note") if t["probe_running"] else None
         t["halted"] = bool(st.get("halt"))
         t["requested"] = bool(st.get("requested"))
-        evs = st.get("evidence") or []
-        t["hard_evidence"] = sum(1 for e in evs if e.get("severity") == "hard")
-        t["soft_evidence"] = sum(1 for e in evs if e.get("severity") == "soft")
-        flagged = [e for e in evs if e.get("severity") in ("hard", "soft")]
-        t["last_evidence"] = compact_evidence(flagged[-1]) if flagged else None
+        active = sorted(active_evidence(st.get("evidence") or []), key=lambda e: e.get("ts") or "")
+        t["hard_evidence"] = sum(1 for e in active if e.get("severity") == "hard")
+        t["soft_evidence"] = sum(1 for e in active if e.get("severity") == "soft")
+        t["evidence_history"] = sum(1 for e in st.get("evidence") or [] if e.get("severity") in ("hard", "soft"))
+        t["last_evidence"] = compact_evidence(active[-1]) if active else None
+        t["last_evidence_ago"] = ago(parse_iso(active[-1].get("ts"))) if active else None
     index_rows = list(iter_jsonl(PROBES_INDEX))
     latest: dict[str, dict] = {}
     for row in index_rows:

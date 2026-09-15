@@ -105,7 +105,9 @@ struct ThreadInfo: Codable, Identifiable {
     var requested: Bool
     var hardEvidence: Int
     var softEvidence: Int
+    var evidenceHistory: Int?
     var lastEvidence: String?
+    var lastEvidenceAgo: String?
     var lastProbe: ProbeSummary?
 }
 

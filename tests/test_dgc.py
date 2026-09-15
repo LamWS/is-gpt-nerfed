@@ -99,6 +99,32 @@ class ScannerTests(unittest.TestCase):
         self.assertIn(("service_tier_change", "info"), kinds)
         self.assertFalse(any(k == "silent_model_change" for k, _ in kinds))
 
+    def test_reverted_changes_stop_being_active_and_usage_limit_is_labelled(self):
+        def tokens_with_usage(ctx, pct):
+            return {"type": "event_msg", "payload": {"type": "token_count", "info": {"model_context_window": ctx},
+                                                     "rate_limits": {"primary": {"used_percent": pct}}}}
+        p = self.write(rollout_lines(
+            turn(1, "gpt-6-astra", "max"), tokens_with_usage(258400, 40),
+            tokens_with_usage(258400, 98), settings("gpt-6-astra", "medium"), turn(2, "gpt-6-astra", "medium"),   # Codex at the limit
+            tokens_with_usage(258400, 12), settings("gpt-6-astra", "high"), turn(3, "gpt-6-astra", "high")))     # switched back
+        _, ev = dgc.scan_full(p, frozenset())
+        kinds = [(e["kind"], e["severity"]) for e in ev]
+        self.assertEqual(kinds, [("applied_effort_change", "soft"), ("applied_effort_change", "info")])
+        self.assertEqual(dgc.compact_evidence(ev[0]), "Codex switched effort max → medium at the usage limit (98%)")
+        self.assertEqual(dgc.active_evidence(ev), [], "the later switch back to high resolves the finding")
+        # a plain settings change (not at the limit) keeps asking
+        q = self.write(rollout_lines(turn(1, "gpt-6-astra", "high"), settings("gpt-6-astra", "low"), turn(2, "gpt-6-astra", "low")))
+        _, ev2 = dgc.scan_full(q, frozenset())
+        self.assertEqual(dgc.compact_evidence(ev2[0]), "Settings: effort high → low · was that you?")
+        self.assertEqual(len(dgc.active_evidence(ev2)), 1)
+        # the same transition on another day is recorded again (dedupe is per timestamp)
+        r = self.write(rollout_lines(turn(1, "gpt-6-astra", "high"), settings("gpt-6-astra", "low"), turn(2, "gpt-6-astra", "low"),
+                                     settings("gpt-6-astra", "high"), turn(3, "gpt-6-astra", "high"),
+                                     settings("gpt-6-astra", "low"), turn(4, "gpt-6-astra", "low")))
+        _, ev3 = dgc.scan_full(r, frozenset())
+        self.assertEqual([e["severity"] for e in ev3], ["soft", "info", "soft"])
+        self.assertEqual(len(dgc.active_evidence(ev3)), 1)
+
     def test_incremental_scan_and_partial_lines(self):
         p = self.write(rollout_lines(turn(1, "gpt-6-astra", "max")))
         scan = dgc.new_scan_state()
