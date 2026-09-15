@@ -2574,17 +2574,26 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "hook":
+        # A hook must never fail. Codex reads a non-zero exit as a reason to stop the user's turn (argparse exits
+        # with 2, which Codex treats as "block"), so hook arguments are parsed loosely and everything is swallowed.
+        event = None
+        for i, a in enumerate(argv[1:], 1):
+            if a == "--event" and i + 1 < len(argv):
+                event = argv[i + 1]
+            elif a.startswith("--event=") or (a.startswith("--event") and len(a) > len("--event")):
+                event = a.split("=", 1)[1] if "=" in a else a[len("--event"):]
+        try:
+            return cmd_hook(argparse.Namespace(cmd="hook", event=event))
+        except BaseException as e:  # noqa: BLE001 — includes SystemExit
+            log_error(f"hook crashed: {e!r}")
+            return 0
     parser = build_parser()
     args = parser.parse_args(argv)
     if not getattr(args, "fn", None):
         parser.print_help()
         return 0
-    if args.cmd == "hook":  # hooks must never break a Codex turn
-        try:
-            return cmd_hook(args)
-        except Exception as e:
-            log_error(f"hook crashed: {e!r}")
-            return 0
     return args.fn(args)
 
 

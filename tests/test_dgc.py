@@ -505,6 +505,17 @@ class ForkProbeTests(unittest.TestCase):
         snap = json.loads(run_cli(["snapshot", "--json"])[1])
         self.assertFalse(all(re.fullmatch(r"Thread \d+", t["title"]) for t in snap["threads"]))
 
+    def test_hook_argv_never_fails(self):
+        # Codex treats a non-zero hook exit as a reason to stop the user's turn; argparse would exit 2.
+        for argv in (["hook", "--eventUserPromptSubmit"], ["hook", "--event=Stop"], ["hook", "--bogus", "x"], ["hook"]):
+            with mock.patch.object(sys, "stdin", io.StringIO(json.dumps({"session_id": "argv-test", "cwd": TMP}))), \
+                    mock.patch.object(sys.stdin, "isatty", return_value=False, create=True):
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    self.assertEqual(dgc.main(argv), 0, argv)
+        ev = [e for e in dgc.iter_jsonl(dgc.EVENTS_PATH) if e.get("sid") == "argv-test"]
+        self.assertIn("UserPromptSubmit", [e["event"] for e in ev])
+
     def test_hook_never_crashes(self):
         with mock.patch.object(sys, "stdin", io.StringIO("this is not json")), \
                 mock.patch.object(sys.stdin, "isatty", return_value=False, create=True):
