@@ -42,10 +42,12 @@ NERFED_DEMO=1 ~/Applications/IsGPTNerfed.app/Contents/MacOS/IsGPTNerfed --render
   `turn/start` per fork, collect the final agent message. Server-initiated requests (approvals) are refused.
 - A session whose newest turn is live cannot be forked at that turn (`identifies an in-progress turn`); the previous
   finished turn is used, else the probe waits up to `busy_wait_s` (600 s) and reports a retryable Invalid.
-- One automatic retry on transport failures. A Suspicious verdict stands until the next probe; `confirm_uncertain` (off
-  by default) adds one more round of three answers.
-- Verdict gate (`mismatch_confidence` 0.8): Mismatch needs p(top) ≥ 0.8, p(declared) ≤ 0.2 and a fused z-score margin
-  ≥ 0.5σ, because ModelTrace's calibrated softmax amplifies small gaps.
+- One automatic retry on transport failures. A fork that has not answered within `probe_timeout_s` (300 s) is
+  replaced once (`topped_up` in the record), so that a slow model does not drop out of the sample. A Suspicious
+  verdict stands until the next probe; `confirm_uncertain` (off by default) adds one more round of three answers.
+- Verdict gate (`mismatch_confidence` 0.8): Mismatch needs p(top) ≥ 0.8, p(declared) ≤ 0.2, a fused z-score margin
+  ≥ 0.5σ (ModelTrace's calibrated softmax amplifies small gaps) and at least two answers (one answer is calibrated
+  at 95.5 %).
 - Fresh-session probe: `thread/start` with `ephemeral: true`, no history.
 - Every request Codex makes carries an originator (the desktop app: `Codex Desktop`; the CLI: `codex_cli_rs`); a
   session started through the app-server would carry the client's `clientInfo` name instead. The probe process sets
@@ -112,6 +114,7 @@ The app also logs to the unified log (Console.app, subsystem `is-gpt-nerfed`).
 | `halt_on_mismatch` | `false` | deny work tools after a mismatch until `nerfed resume` |
 | `mismatch_confidence` | `0.8` | verdict gate |
 | `confirm_uncertain` | `false` | second round when Suspicious |
+| `probe_timeout_s` | `300` | seconds a fork may take; a timed-out fork is replaced once |
 | `busy_wait_s` | `600` | how long to wait for a live turn |
 | `hide_titles` | `false` | screenshot mode |
 | `check_updates` | `true` | ask GitHub for a newer release every 10 minutes |

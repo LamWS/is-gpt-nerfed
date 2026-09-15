@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.3 — 2026-09-16
+
+- A fork that has not answered within the deadline (now 300 s) is replaced once, so a slow model does not drop out of
+  the sample and leave the verdict to whichever model answered fast. The record says so (`topped_up`).
+- A Mismatch needs at least two answers; a single answer only ever reaches Suspicious.
+
 ## 0.4.2 — 2026-09-16
 
 - Probes identify themselves to the service as the client they check for: the probed session's own originator

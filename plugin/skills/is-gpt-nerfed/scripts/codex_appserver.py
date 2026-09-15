@@ -18,7 +18,7 @@ import threading
 import time
 import uuid
 
-CLIENT_INFO = {"name": "is-gpt-nerfed", "version": "0.4.2"}
+CLIENT_INFO = {"name": "is-gpt-nerfed", "version": "0.4.3"}
 FINISHED_TURN = ("completed", "interrupted", "failed")
 MESSAGE_ITEMS = ("userMessage", "agentMessage", "reasoning", "hookPrompt")
 
@@ -283,6 +283,7 @@ def rate_limit_summary(rl: dict) -> dict:
 
 
 def run_turns(app: AppServer, forks: list[dict], deadline: float, parallel: bool = True) -> None:
+    t_start = time.time()
     """Start one text-only turn per fork and collect the final agent message. Mutates each fork dict:
     text, error, usage, rate_limits, turn_id, elapsed_s."""
     states = {f["id"]: f for f in forks}
@@ -368,7 +369,7 @@ def run_turns(app: AppServer, forks: list[dict], deadline: float, parallel: bool
             break
     for f in forks:
         if not f["done"]:
-            finish(f, "probe deadline expired")
+            finish(f, f"fork timed out: no answer within {int(time.time() - t_start)} s")
             if f.get("turn_id"):
                 try:
                     app.request("turn/interrupt", {"threadId": f["id"], "turnId": f["turn_id"]}, 3)

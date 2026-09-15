@@ -127,6 +127,9 @@ def main():
             turn_id = "turn-" + uuid.uuid4().hex[:6]
             send({"id": rid, "result": {"turn": {"id": turn_id, "status": "inProgress"}}})
             send({"method": "turn/started", "params": {"threadId": fid, "turn": {"id": turn_id, "status": "inProgress"}}})
+            if os.environ.get("FAKE_CODEX_HANG_FIRST") and served == 0:  # the first turn never answers (a stuck fork)
+                served += 1
+                continue
             if os.environ.get("FAKE_CODEX_APPROVAL"):
                 send({"id": 900 + served, "method": "item/commandExecution/requestApproval",
                       "params": {"threadId": fid, "turnId": turn_id, "command": "rm -rf /"}})

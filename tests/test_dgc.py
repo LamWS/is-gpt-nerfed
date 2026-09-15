@@ -646,6 +646,22 @@ class SnapshotReportTests(unittest.TestCase):
         events = [e for e in dgc.iter_jsonl(os.path.join(dgc.NERFED_HOME, "log.jsonl")) if e.get("kind") == "session_start"]
         self.assertTrue(events and events[-1].get("sid") == "start-thread-1" and events[-1].get("session_kind") == "main")
 
+    def test_a_fork_that_times_out_is_replaced_once(self):
+        dgc.save_config({**dgc.load_config(), "probe_timeout_s": 4})
+        code, out = run_cli(["probe", "fresh", "--model", "gpt-6-astra", "--queries", "2"], {"FAKE_CODEX_MODEL": "gpt-6-astra", "FAKE_CODEX_HANG_FIRST": "1"})
+        self.assertEqual(code, 0, out)
+        rec = dgc.read_json(dgc.probe_path([r for r in dgc.iter_jsonl(dgc.PROBES_INDEX) if r.get("mode") == "fresh"][-1]["id"]))
+        self.assertEqual(rec.get("topped_up"), 1, "one fork timed out, one replacement was run")
+        self.assertEqual(rec["used_outputs"], 2, "the replacement answer counts")
+        self.assertTrue(any("timed out" in e for e in rec["errors"]), rec["errors"])
+        self.assertEqual(rec["verdict"], "MATCH")
+        dgc.save_config({**dgc.load_config(), "probe_timeout_s": 30})
+
+    def test_a_mismatch_needs_two_answers(self):
+        results = [{"model": "gpt-5.6-luna", "probability": 0.99, "score": 2.0}, {"model": "gpt-6-astra", "probability": 0.01, "score": 0.0}]
+        self.assertEqual(dgc.assess("gpt-6-astra", {"results": results, "used_outputs": 1}, [])["verdict"], "SUSPICIOUS")
+        self.assertEqual(dgc.assess("gpt-6-astra", {"results": results, "used_outputs": 2}, [])["verdict"], "MISMATCH")
+
     def test_probes_identify_as_the_client_they_check_for(self):
         self.assertEqual(dgc.default_originator("/Applications/ChatGPT.app/Contents/Resources/codex"), "Codex Desktop")
         self.assertEqual(dgc.default_originator("/opt/homebrew/bin/codex"), "codex_cli_rs")

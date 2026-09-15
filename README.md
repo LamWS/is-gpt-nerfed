@@ -37,7 +37,7 @@ the model you selected:
 | --- | --- |
 | Match | the model you selected answered |
 | Suspicious | the fingerprint leans elsewhere, but not confidently; it stands until the next probe |
-| Downgrade / Upgrade / Rerouted | a confident mismatch: top candidate at 80 % or more, your model at 20 % or less |
+| Downgrade / Upgrade / Rerouted | a confident mismatch: top candidate at 80 % or more, your model at 20 % or less, at least two answers |
 | Downgraded | Codex's own records show a silent switch; no fingerprint needed |
 | Upgraded | Codex's own records show a move to a newer or larger model |
 | Unlisted | your model is not in the fingerprint bank yet |
@@ -107,7 +107,8 @@ verdicts show as "another account" and those sessions are probed again.
 - "The model you selected" is the model Codex asked for. If the server swaps the weights and keeps the name, only the
   fingerprint or a smaller context window can show it.
 - The bank is closed-set: a model outside it is mapped to its nearest look-alike.
-- A probe costs three short answers on your account.
+- A probe costs three short answers on your account. A fork that has not answered within five minutes is replaced
+  once, so a slow model does not drop out of the sample.
 - A model or effort change made through Codex's own settings is shown as a question ("was that you?"), because the
   plugin cannot tell whether you or Codex changed it.
 - The probes run in a private app-server process that identifies itself as the client it checks for (the desktop app,

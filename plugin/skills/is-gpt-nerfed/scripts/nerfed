@@ -39,7 +39,7 @@ sys.path.insert(0, HERE)
 import codex_appserver as cas  # noqa: E402
 import modeltrace_core as core  # noqa: E402
 
-VERSION = "0.4.2"
+VERSION = "0.4.3"
 DGC_BIN = os.path.abspath(__file__)
 SKILL_DIR = os.path.dirname(HERE)
 PLUGIN_ROOT = os.environ.get("PLUGIN_ROOT") or os.environ.get("CLAUDE_PLUGIN_ROOT") or os.path.dirname(os.path.dirname(SKILL_DIR))
@@ -79,7 +79,7 @@ DEFAULT_CONFIG = {
     "queries": 3,                    # parallel ephemeral forks per probe (ModelTrace calibrates 1..3)
     "parallel": True,
     "languages": ["zh", "en"],
-    "probe_timeout_s": 180,
+    "probe_timeout_s": 300,          # a fork that has not answered by then is replaced once (slow models must not drop out)
     "passive": True,                 # scan rollouts on every Stop hook
     "notify": True,                  # macOS notification when the pet has something to say
     "notify_on_ok": False,           # also notify on MATCH verdicts
@@ -943,7 +943,8 @@ def assess(expected: str | None, analysis: dict | None, hard_evidence: list[dict
     Probabilities come from ModelTrace's calibrated softmax, which (as its author notes) amplifies small score
     gaps: a 100% can hide a thin margin. So a MISMATCH must be confident on three counts: p(top) ≥ confidence,
     p(declared) ≤ 1 − confidence, and the fused z-score margin between them ≥ 0.5σ. Anything weaker is
-    SUSPICIOUS, which the probe runners answer with one more round of forks before the verdict is final."""
+    SUSPICIOUS. A MISMATCH also needs at least two answers: one answer is calibrated at 95.5 %, too thin to call
+    a downgrade on."""
     conf = float((cfg or {}).get("mismatch_confidence") or DEFAULT_CONFIG["mismatch_confidence"])
     out = {"verdict": None, "direction": None, "p_top": None, "p_expected": None, "margin": None, "confidence": None, "top": None}
     if hard_evidence:
@@ -970,6 +971,9 @@ def assess(expected: str | None, analysis: dict | None, hard_evidence: list[dict
     eps = 1e-9  # 0.80 ≥ 0.8 and 0.20 ≤ 1 − 0.8 must both hold despite binary floating point
     confident = (top["probability"] + eps >= conf and exp_row["probability"] <= (1 - conf) + eps
                  and out["margin"] + eps >= MARGIN_SIGMA)
+    n_answers = analysis.get("used_outputs")
+    if n_answers is not None and int(n_answers) < 2:
+        confident = False
     out.update(verdict="MISMATCH" if confident else "SUSPICIOUS", direction=classify_change(exp, top["model"]),
                confidence="high" if confident else "low")
     return out
@@ -1160,15 +1164,16 @@ def run_fork_probe(thread_id: str, cfg: dict, queries: int | None = None, quiet:
     write_json(probe_path(rec["id"]), rec)
     log_event("probe_originator", probe=rec["id"], sid=thread_id, originator=orig)
 
-    def runner():
-        return cas.probe_thread(cb, thread_id, queries=q, languages=cfg.get("languages") or ["zh", "en"],
-                                timeout_s=float(cfg.get("probe_timeout_s") or 180), parallel=bool(cfg.get("parallel", True)),
+    def runner(n: int = q):
+        return cas.probe_thread(cb, thread_id, queries=n, languages=cfg.get("languages") or ["zh", "en"],
+                                timeout_s=float(cfg.get("probe_timeout_s") or 300), parallel=bool(cfg.get("parallel", True)),
                                 busy_wait_s=float(cfg.get("busy_wait_s") or 600), on_wait=on_wait, originator=orig)
 
     outputs, errors, out = probe_round(runner, rec)
     if out:
         rec["thread"], rec["forks"], rec["elapsed_s"] = out["thread"], out["forks"], out["elapsed_s"]
         expected = out["thread"].get("model")
+        outputs, errors = top_up_timeouts(rec, outputs, errors, q, runner, sid=thread_id, mode="fork")
     else:
         row = db_thread(thread_id)
         expected = row.get("model") if row else None
@@ -1226,6 +1231,24 @@ def probe_round(runner, rec: dict) -> tuple[list[dict], list[str], dict | None]:
         return outputs, errors, out
 
 
+def top_up_timeouts(rec: dict, outputs: list[dict], errors: list[str], wanted: int, runner_n, sid: str | None = None,
+                    mode: str | None = None) -> tuple[list[dict], list[str]]:
+    """A fork that did not answer within the deadline is replaced once, so that a slow model does not drop out of
+    the sample and leave the verdict to whichever model answered fast."""
+    missing = int(wanted) - len(outputs)
+    timed_out = [e for e in errors if "timed out" in e or "deadline" in e]
+    if missing <= 0 or not timed_out or rec.get("topped_up"):
+        return outputs, errors
+    rec["topped_up"] = missing
+    rec["retries"] = int(rec.get("retries") or 0) + 1
+    log_event("probe_top_up", level="warn", probe=rec["id"], sid=sid, mode=mode, missing=missing, reason=timed_out[0][:160])
+    o2, e2, out2 = probe_round(lambda: runner_n(missing), rec)
+    if out2:
+        rec["forks"] = (rec.get("forks") or []) + out2["forks"]
+        rec["elapsed_s"] = round(float(rec.get("elapsed_s") or 0) + out2["elapsed_s"], 1)
+    return outputs + o2, errors + e2
+
+
 FRESH_RUNNING = "fresh_running.json"
 
 
@@ -1272,9 +1295,9 @@ def run_fresh_probe(cfg: dict, model: str | None = None, effort: str | None = No
     write_json(probe_path(rec["id"]), rec)
     log_event("probe_originator", probe=rec["id"], mode="fresh", originator=orig)
 
-    def runner():
-        return cas.probe_fresh(cb, model, effort=effort, queries=q, languages=cfg.get("languages") or ["zh", "en"],
-                               timeout_s=float(cfg.get("probe_timeout_s") or 180), parallel=bool(cfg.get("parallel", True)),
+    def runner(n: int = q):
+        return cas.probe_fresh(cb, model, effort=effort, queries=n, languages=cfg.get("languages") or ["zh", "en"],
+                               timeout_s=float(cfg.get("probe_timeout_s") or 300), parallel=bool(cfg.get("parallel", True)),
                                originator=orig)
 
     try:
@@ -1282,6 +1305,7 @@ def run_fresh_probe(cfg: dict, model: str | None = None, effort: str | None = No
         if out:
             rec["thread"], rec["forks"], rec["elapsed_s"] = out["thread"], out["forks"], out["elapsed_s"]
             expected = out["thread"].get("model") or model
+            outputs, errors = top_up_timeouts(rec, outputs, errors, q, runner, mode="fresh")
         if needs_confirmation(expected, outputs, cfg):
             rec["rounds"] = 2
             log_event("probe_confirm_round", probe=rec["id"], mode="fresh", reason="first round SUSPICIOUS")
