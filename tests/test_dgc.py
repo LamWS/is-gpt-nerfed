@@ -648,7 +648,9 @@ class SnapshotReportTests(unittest.TestCase):
 
     def test_a_fork_that_times_out_is_replaced_once(self):
         dgc.save_config({**dgc.load_config(), "probe_timeout_s": 4})
-        code, out = run_cli(["probe", "fresh", "--model", "gpt-6-astra", "--queries", "2"], {"FAKE_CODEX_MODEL": "gpt-6-astra", "FAKE_CODEX_HANG_FIRST": "1"})
+        marker = os.path.join(TMP, "hang-once")
+        open(marker, "w").close()
+        code, out = run_cli(["probe", "fresh", "--model", "gpt-6-astra", "--queries", "2"], {"FAKE_CODEX_MODEL": "gpt-6-astra", "FAKE_CODEX_HANG_ONCE": marker})
         self.assertEqual(code, 0, out)
         rec = dgc.read_json(dgc.probe_path([r for r in dgc.iter_jsonl(dgc.PROBES_INDEX) if r.get("mode") == "fresh"][-1]["id"]))
         self.assertEqual(rec.get("topped_up"), 1, "one fork timed out, one replacement was run")

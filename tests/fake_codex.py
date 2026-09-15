@@ -127,7 +127,9 @@ def main():
             turn_id = "turn-" + uuid.uuid4().hex[:6]
             send({"id": rid, "result": {"turn": {"id": turn_id, "status": "inProgress"}}})
             send({"method": "turn/started", "params": {"threadId": fid, "turn": {"id": turn_id, "status": "inProgress"}}})
-            if os.environ.get("FAKE_CODEX_HANG_FIRST") and served == 0:  # the first turn never answers (a stuck fork)
+            hang = os.environ.get("FAKE_CODEX_HANG_ONCE")  # marker file: the next turn anywhere never answers (a stuck fork), once
+            if hang and os.path.exists(hang):
+                os.remove(hang)
                 served += 1
                 continue
             if os.environ.get("FAKE_CODEX_APPROVAL"):
