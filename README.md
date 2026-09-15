@@ -68,32 +68,61 @@ message at the next turn boundary, and (for downgrades) the Codex notification s
 *Inspector Astra*, is installed into `~/.codex/pets/` for `/pet`. Optional Guard-style halt: with
 `halt_on_mismatch` on, work tools are denied after a mismatch until you explicitly say to resume.
 
-## Install (macOS, Codex desktop app or CLI ≥ 0.117)
+## Requirements
+
+| | |
+| --- | --- |
+| Codex | desktop app (ChatGPT.app / Codex.app) or CLI, with plugins and hooks (≥ 0.117; developed against 0.154) |
+| macOS | any version for the plugin and CLI; **macOS 26** for the menu bar app (Liquid Glass APIs) |
+| Python | the system `python3` is enough (3.9+; no packages). On a Mac without the Command Line Tools, `python3` prompts to install them once |
+| Xcode | only to build the menu bar app yourself (Xcode 26); otherwise use the release zip |
+
+Windows and Linux: the plugin logic is portable Python, but notifications, the pet and the app are macOS-only and
+nothing has been tested there.
+
+## Install
 
 ```bash
-git clone https://github.com/<you>/is-gpt-nerfed ~/is-gpt-nerfed && cd ~/is-gpt-nerfed && ./install.sh
+git clone https://github.com/<owner>/is-gpt-nerfed ~/is-gpt-nerfed && cd ~/is-gpt-nerfed && ./install.sh
 ```
 
-`install.sh` registers this folder as a local plugin marketplace (`codex plugin marketplace add` + `codex plugin add`,
-with a fallback that appends two blocks to `~/.codex/config.toml`), installs the pet, and runs `nerfed doctor`. Needs
-only the system `python3`; the codex binary is found on `PATH` or inside the ChatGPT/Codex app bundle
-(`CODEX_BIN=/path/to/codex ./install.sh` to override).
+`install.sh`:
 
-Then:
+1. registers this folder as a local plugin marketplace and installs the plugin (`codex plugin marketplace add` +
+   `codex plugin add`, with a fallback that appends two blocks to `~/.codex/config.toml`). Codex keeps its own copy of
+   the plugin under `~/.codex/plugins/cache/` and runs hooks from there, so **after changing the code run
+   `./install.sh` again**;
+2. installs the pet for `/pet`;
+3. asks to **trust the plugin's hooks** (`--trust-hooks` skips the question, `--no-trust` leaves them alone). Codex never
+   runs a hook it has not been told to trust, and it does not tell you: trust is a per-definition hash under
+   `[hooks.state]` in `~/.codex/config.toml`, written through the same `config/batchWrite` call the Codex TUI's `/hooks`
+   screen makes. `nerfed hooks status` shows it, `nerfed hooks trust` records it later;
+4. links `nerfed` into `~/.local/bin` when that directory exists, and runs `nerfed doctor`.
 
-1. Let the installer trust the plugin's hooks when it asks (`./install.sh --trust-hooks` to skip the question). Codex
-   never runs a hook it has not been told to trust: trust is recorded per hook definition hash under `[hooks.state]`
-   in `~/.codex/config.toml`, through the same `config/batchWrite` call the Codex TUI's `/hooks` screen makes.
-   `nerfed hooks status` shows the state; `nerfed hooks trust` records it later.
-2. Quit and reopen the Codex app. The desktop app reads plugins and hook trust when it starts; until then the panel
-   says "Codex app has not loaded the plugin yet" and no hook fires in your threads.
-3. In any thread say `$is-gpt-nerfed`, or `/side $is-gpt-nerfed` to keep it out of your context.
+The codex binary is found on `PATH` or inside the ChatGPT/Codex app bundle (`CODEX_BIN=/path/to/codex ./install.sh`
+to override). The running desktop app picked up the plugin and the trust within a couple of minutes in testing; if the
+panel keeps saying "Codex app has not loaded the plugin yet", quit and reopen Codex.
 
-From another machine, `codex plugin marketplace add <owner>/is-gpt-nerfed` then `codex plugin add is-gpt-nerfed@is-gpt-nerfed`
-works too (Codex supports git marketplaces); run `./install.sh` from the checked-out copy for the pet and the doctor.
+Then, in any thread, say `$is-gpt-nerfed` (or `/side $is-gpt-nerfed` to keep it out of your context), or just let the
+schedule run: by default every thread is probed in the background every 8 turns.
 
-Uninstall: `./uninstall.sh` (add `--purge` to delete the local ledger). Codex caches a copy of the plugin under
-`~/.codex/plugins/cache/`; after changing the code, run `./install.sh` again so the cache is refreshed.
+Codex also accepts this repository as a git marketplace: `codex plugin marketplace add <owner>/is-gpt-nerfed`, then
+`codex plugin add is-gpt-nerfed@is-gpt-nerfed`; run `./install.sh` from the checked-out copy for the pet, trust and doctor.
+
+Uninstall: `./uninstall.sh` (add `--purge` to delete the local ledger).
+
+## FAQ
+
+- **The panel says Invalid with "identifies an in-progress turn" / "stayed busy".** The thread was mid-turn. Newer
+  builds fork the previous finished turn or wait; press Retry.
+- **No hook events, ever.** Run `nerfed doctor --live`. Untrusted hooks → `nerfed hooks trust`. Hooks missing → `./install.sh`.
+  Trusted but "Codex Desktop has fired these hooks: not yet" → quit and reopen the Codex app.
+- **It said Match, then I switched accounts and it still said all clear.** Fixed in 0.4.0: verdicts from another
+  account are shown as unverified and re-probed. If you upgraded, old records are marked "account unknown" once.
+- **Does it cost tokens?** Only the active probe: three short answers per probe (input mostly cached), plus a second
+  round when the first is Suspicious. The passive scan and the panel cost nothing.
+- **Can OpenAI see this?** The forks are ordinary ephemeral threads under your account; the prompts are ModelTrace's
+  public prompts. Nothing else leaves your machine.
 
 ## Menu bar app (macOS 26, Liquid Glass)
 
@@ -114,7 +143,13 @@ Uninstall: `./uninstall.sh` (add `--purge` to delete the local ledger). Codex ca
 ```bash
 ./macos/build.sh --install    # needs Xcode 26; builds, ad-hoc signs, installs to ~/Applications and launches
 ./macos/build.sh --run        # run from the build folder instead
+./macos/build.sh --zip        # dist/IsGPTNerfed-<version>.zip (+ .sha256) for a release
 ```
+
+Prebuilt zips on the Releases page are ad-hoc signed, not notarized: the first launch needs right-click → Open, or
+`xattr -dr com.apple.quarantine ~/Applications/IsGPTNerfed.app`. The app needs the plugin installed (it runs `nerfed`
+from `~/.codex/is-gpt-nerfed/nerfed_bin`, written by `install.sh`). Enable "Launch at login" in its settings; the
+"Hide thread titles and account" switch there is for screenshots.
 
 The app is a thin client: it polls `nerfed snapshot --json` every 8 s and dispatches `nerfed worker`, `nerfed config set`
 and `nerfed resume`. Probes that fail on transport are retried once automatically; the panel offers a manual Retry after that.
@@ -190,8 +225,21 @@ launches a detached worker that forks *that* thread. Subagent threads are exclud
   (three short answers, mostly cached input).
 - The probe's forks run in a private app-server process, so if routing were tied to the desktop's own connection
   rather than to the conversation and account, fidelity would be lower than the desktop's own `/side`. Unverifiable.
+- The self-answer flow inside a real `/side` conversation (hooks firing there, the challenge/submit loop) has not been
+  exercised end to end yet; the fork-based probe is the tested path.
+- Codex's app-server protocol is marked experimental by OpenAI; method or field renames would break probing until
+  `codex_appserver.py` is updated. `nerfed doctor --fork` proves the fork path against your installed Codex.
 
-The ledger under `~/.codex/is-gpt-nerfed/` (`probes/*.json`, `sessions/*.json`, `events.jsonl`) is plain JSON; read it.
+The ledger under `~/.codex/is-gpt-nerfed/` (`probes/*.json`, `sessions/*.json`, `events.jsonl`, `log.jsonl`) is plain
+JSON; read it.
+
+## Privacy
+
+Everything stays on the machine. The plugin reads Codex's own files under `~/.codex/`: rollouts and the state database
+(thread titles, models, turns), `models_cache.json` (which models are hidden), and `auth.json` only to derive a
+**hash** of the account id and a masked e-mail (`w…@example.com`) for display; tokens are never stored or logged.
+Probe answers, verdicts and the activity log live under `~/.codex/is-gpt-nerfed/`. No network calls are made by this
+code; the only traffic is Codex's own inference for the forks.
 
 ## Development
 
@@ -203,7 +251,11 @@ python3 tools/make_pet.py                  # regenerate the pet spritesheet (pur
 ```
 
 Layout: `plugin/` is the Codex plugin (`.codex-plugin/plugin.json`, `skills/is-gpt-nerfed/`, `assets/`),
-`.agents/plugins/marketplace.json` makes this repo a marketplace, `bin/nerfed` is a convenience wrapper.
+`.agents/plugins/marketplace.json` makes this repo a marketplace, `bin/nerfed` is a convenience wrapper, `macos/` the
+menu bar app. CI runs the Python tests on macOS and Linux with Python 3.9 and 3.12.
+
+Contributions welcome: new detection signals, bank updates from upstream ModelTrace (keep `provenance.json` honest),
+Windows/Linux support, translations of the pet's lines. Please keep the panel to its two type sizes and no icons.
 
 ## Credits
 

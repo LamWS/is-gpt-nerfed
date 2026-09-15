@@ -67,6 +67,7 @@ struct DGCConfig: Codable {
     var haltOnMismatch: Bool
     var mismatchConfidence: Double?
     var confirmUncertain: Bool?
+    var hideTitles: Bool?
     var petName: String
 }
 

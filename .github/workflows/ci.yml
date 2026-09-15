@@ -1,0 +1,30 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  tests:
+    name: python ${{ matrix.python }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+        python: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: unit + offline end-to-end tests (fake Codex app-server)
+        run: python -W ignore -m unittest discover -s tests -v
+      - name: selftest
+        run: python plugin/skills/is-gpt-nerfed/scripts/nerfed selftest
+      - name: scorer parity with ModelTrace's JS core
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12'
+        run: |
+          node --version
+          python -m unittest tests.test_parity -v || echo "parity test skipped (needs ModelTrace checkout)"

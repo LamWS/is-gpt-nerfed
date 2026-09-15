@@ -39,7 +39,7 @@ sys.path.insert(0, HERE)
 import codex_appserver as cas  # noqa: E402
 import modeltrace_core as core  # noqa: E402
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 DGC_BIN = os.path.abspath(__file__)
 SKILL_DIR = os.path.dirname(HERE)
 PLUGIN_ROOT = os.environ.get("PLUGIN_ROOT") or os.environ.get("CLAUDE_PLUGIN_ROOT") or os.path.dirname(os.path.dirname(SKILL_DIR))
@@ -85,6 +85,7 @@ DEFAULT_CONFIG = {
     "halt_on_mismatch": False,       # Guard-style: deny work tools after a mismatch until `nerfed resume`
     "mismatch_confidence": 0.8,      # MISMATCH needs p(top) ≥ this, p(declared) ≤ 1-this and a score margin ≥ 0.5σ
     "confirm_uncertain": True,       # a SUSPICIOUS first round triggers one more round before the verdict is final
+    "hide_titles": False,            # panel shows "Thread 1…N" and hides the account label (screenshot mode)
     "pet_name": "Inspector Astra",
     "codex_bin": None,
     "nudge_cooldown_turns": 4,
@@ -221,7 +222,8 @@ def parse_frequency(s) -> tuple[str, int]:
 
 
 def coerce_config_value(key: str, value: str):
-    if key in ("passive", "notify", "notify_on_ok", "announce_ok", "sound", "parallel", "halt_on_mismatch", "confirm_uncertain"):
+    if key in ("passive", "notify", "notify_on_ok", "announce_ok", "sound", "parallel", "halt_on_mismatch", "confirm_uncertain",
+               "hide_titles"):
         return str(value).strip().lower() in ("1", "true", "yes", "on")
     if key == "mismatch_confidence":
         v = float(value)
@@ -1361,7 +1363,8 @@ def cmd_hook(args) -> int:
     ensure_dirs()
     acct = note_account("hook")
     log = {"ts": iso(), "event": ev, "sid": sid, "cwd": payload.get("cwd"), "model": payload.get("model"),
-           "turn_id": payload.get("turn_id"), "transcript_path": payload.get("transcript_path"), "keys": sorted(payload.keys())}
+           "turn_id": payload.get("turn_id"), "transcript_path": payload.get("transcript_path"), "keys": sorted(payload.keys()),
+           "plugin_root_env": os.environ.get("PLUGIN_ROOT")}
     if ev == "UserPromptSubmit":
         log["prompt_chars"] = len(str(payload.get("prompt") or ""))
     if ev in ("PreToolUse", "PostToolUse"):
@@ -1742,6 +1745,12 @@ def cmd_snapshot(args) -> int:
     status = "alert" if downgraded else ("warn" if suspicious else ("unverified" if unverified else "ok"))
     for t in out_threads:  # surface the worker's progress note (e.g. waiting for a live turn to finish)
         t["probe_note"] = t.pop("_probe_note", None)
+    account_label = acct["label"]
+    if cfg.get("hide_titles"):  # screenshot mode: neutral thread names, no account
+        for i, t in enumerate(out_threads, 1):
+            t["title"] = f"Thread {i}"
+            t["cwd"] = None
+        account_label = "account hidden"
     hooks = hooks_status(cfg)
     state = read_json(STATE_PATH, {}) or {}
     if state.get("last_status") != status or state.get("last_message") != message:
@@ -1755,7 +1764,7 @@ def cmd_snapshot(args) -> int:
                         "running": running, "message": message},
             "default_model": default_model, "default_effort": default_effort,
             "global_probe": global_probe, "global_running": bool(fr), "global_alert": global_alert,
-            "account": {"label": acct["label"], "plan": acct["plan"], "switched_at": acct.get("switched_at"),
+            "account": {"label": account_label, "plan": acct["plan"], "switched_at": acct.get("switched_at"),
                         "switched_ago": ago(acct.get("switched_ts")) if acct.get("switched_ts") else None,
                         "previous_label": (acct.get("previous") or {}).get("label")},
             "threads": out_threads, "recent_probes": [probe_summary(r, acct["id"]) for r in index_rows[-10:]][::-1]}
@@ -2119,21 +2128,6 @@ def manifest_paths() -> list[str]:
     return [p for p in (os.path.join(PLUGIN_ROOT, ".codex-plugin", "plugin.json"), os.path.join(PLUGIN_ROOT, "plugin.json")) if os.path.exists(p)]
 
 
-PLUGIN_ROOT_TOKEN = re.compile(r"\$\{PLUGIN_ROOT:-(?:\$\{CLAUDE_PLUGIN_ROOT\}|[^{}]*)\}")
-
-
-def bake_plugin_root() -> None:
-    """Give hook commands an absolute fallback so they work even if Codex does not export PLUGIN_ROOT."""
-    for p in manifest_paths():
-        with open(p, "r", encoding="utf-8") as f:
-            text = f.read()
-        new = PLUGIN_ROOT_TOKEN.sub("${PLUGIN_ROOT:-" + PLUGIN_ROOT + "}", text)
-        if new != text:
-            with open(p, "w", encoding="utf-8") as f:
-                f.write(new)
-            print(f"baked plugin root into {p}")
-
-
 def run(cmd: list[str], timeout: int = 120) -> tuple[int, str]:
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -2159,7 +2153,6 @@ def cmd_setup(args) -> int:
     ensure_dirs()
     root = os.path.dirname(PLUGIN_ROOT)
     print(f"plugin root: {PLUGIN_ROOT}")
-    bake_plugin_root()
     write_bin_hint()
     if not os.path.exists(os.path.join(pet_src_dir(), "spritesheet.png")):
         gen = os.path.join(root, "tools", "make_pet.py")
@@ -2278,11 +2271,7 @@ def cmd_doctor(args) -> int:
         hooks = m.get("hooks") or ((m.get("extensions") or {}).get("com.openai") or {}).get("hooks")
         text = json.dumps(hooks) if hooks else ""
         check(bool(hooks), f"hooks declared in {os.path.relpath(p, PLUGIN_ROOT)}")
-        fallback = re.search(r"\$\{PLUGIN_ROOT:-([^{}]+)\}", text)
-        if fallback and fallback.group(1).startswith("/"):
-            check(os.path.exists(os.path.join(fallback.group(1), "skills", "is-gpt-nerfed", "scripts", "nerfed")), f"hook fallback path {fallback.group(1)}", "run ./install.sh again")
-        else:
-            print("  ⚠️  hook commands rely on Codex exporting PLUGIN_ROOT (run ./install.sh to bake an absolute fallback)")
+        check("${PLUGIN_ROOT" in text, "hook commands locate the plugin through ${PLUGIN_ROOT} (exported by Codex)")
     text = config_toml_text()
     check(plugin_enabled_in_config(), f'[plugins."{PLUGIN_NAME}@…"] enabled = true in config.toml', "run ./install.sh")
     check(not re.search(r"\[features\][^\[]*hooks\s*=\s*false", text), "hooks feature not disabled in config.toml")

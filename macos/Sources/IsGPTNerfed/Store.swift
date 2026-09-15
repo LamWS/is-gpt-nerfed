@@ -20,6 +20,11 @@ final class Store {
     var launchAtLogin: Bool = SMAppService.mainApp.status == .enabled
     private var pollTask: Task<Void, Never>?
     private var lastStatusKey = ""
+    /// Probes requested from the panel whose worker has not yet registered itself in the ledger. Until the snapshot
+    /// shows them running (or finished), the row keeps its "probing" state instead of flickering back to idle.
+    private var pendingProbes: [String: Date] = [:]
+    private var pendingFresh: Date?
+    private let pendingTimeout: TimeInterval = 45
 
     var isAlert: Bool { (snapshot?.overall.downgraded ?? 0) > 0 }
     var isWarn: Bool { !isAlert && (snapshot?.overall.suspicious ?? 0) > 0 }
@@ -46,7 +51,8 @@ final class Store {
             let json = try await DGC.run(["snapshot", "--json"] + (demo ? ["--demo"] : []), timeout: 20)
             let decoder = JSONDecoder()
             decoder.keyDecodingStrategy = .convertFromSnakeCase
-            let snap = try decoder.decode(Snapshot.self, from: Data(json.utf8))
+            var snap = try decoder.decode(Snapshot.self, from: Data(json.utf8))
+            overlayPending(&snap)
             snapshot = snap
             lastError = nil
             lastRefresh = Date()
@@ -63,21 +69,49 @@ final class Store {
         }
     }
 
+    /// Keep panel-requested probes in their "probing" state until the ledger catches up (worker start-up takes a
+    /// second or two, and a poll can land in between).
+    private func overlayPending(_ snap: inout Snapshot) {
+        let now = Date()
+        for (id, since) in pendingProbes {
+            guard let i = snap.threads.firstIndex(where: { $0.id == id }) else { pendingProbes[id] = nil; continue }
+            let finishedAfter = snap.threads[i].lastProbe?.finished.flatMap(parseISO).map { $0 > since } ?? false
+            if snap.threads[i].probeRunning || finishedAfter || now.timeIntervalSince(since) > pendingTimeout {
+                pendingProbes[id] = nil
+            } else {
+                snap.threads[i].probeRunning = true
+                snap.overall.running += 1
+            }
+        }
+        if let since = pendingFresh {
+            let finishedAfter = snap.globalProbe?.finished.flatMap(parseISO).map { $0 > since } ?? false
+            if snap.globalRunning == true || finishedAfter || now.timeIntervalSince(since) > pendingTimeout {
+                pendingFresh = nil
+            } else {
+                snap.globalRunning = true
+                snap.overall.running += 1
+            }
+        }
+    }
+
+    private func parseISO(_ s: String) -> Date? {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f.date(from: s)
+    }
+
     /// Start (or retry) a background probe of one thread. The worker records the result; the next refresh shows it.
     func probe(_ thread: ThreadInfo) {
         appLog.notice("probe requested from panel for thread \(thread.id, privacy: .public)")
         do {
             try DGC.spawnDetached(["worker", "--thread", thread.id])
-            if var snap = snapshot, let i = snap.threads.firstIndex(where: { $0.id == thread.id }) {
-                snap.threads[i].probeRunning = true
-                snap.overall.running += 1
-                snapshot = snap
-            }
+            pendingProbes[thread.id] = Date()
+            if var snap = snapshot { overlayPending(&snap); snapshot = snap }
         } catch {
             appLog.error("probe spawn failed: \(error.localizedDescription, privacy: .public)")
             lastError = error.localizedDescription
         }
-        Task { try? await Task.sleep(for: .seconds(2)); await refresh() }
+        Task { try? await Task.sleep(for: .seconds(3)); await refresh() }
     }
 
     /// Global probe: brand-new ephemeral sessions with the default model, no thread context.
@@ -85,16 +119,13 @@ final class Store {
         appLog.notice("fresh-session probe requested from panel")
         do {
             try DGC.spawnDetached(["worker", "--fresh"])
-            if var snap = snapshot {
-                snap.globalRunning = true
-                snap.overall.running += 1
-                snapshot = snap
-            }
+            pendingFresh = Date()
+            if var snap = snapshot { overlayPending(&snap); snapshot = snap }
         } catch {
             appLog.error("fresh probe spawn failed: \(error.localizedDescription, privacy: .public)")
             lastError = error.localizedDescription
         }
-        Task { try? await Task.sleep(for: .seconds(2)); await refresh() }
+        Task { try? await Task.sleep(for: .seconds(3)); await refresh() }
     }
 
     func resume(_ thread: ThreadInfo) async {

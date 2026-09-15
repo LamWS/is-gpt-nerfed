@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -487,6 +488,22 @@ class ForkProbeTests(unittest.TestCase):
         self.assertEqual(len(last["from_id"]), 12)
         self.assertNotEqual(last["from_id"], last["to_id"])
         os.remove(auth)
+
+    def test_hide_titles_screenshot_mode(self):
+        with mock.patch.object(dgc, "link_session", side_effect=lambda st: st.update(kind="main")):
+            run_hook({"session_id": "hide-thread-1", "cwd": TMP, "model": "gpt-6-astra", "hook_event_name": "UserPromptSubmit", "prompt": "x"})
+        run_cli(["config", "set", "hide_titles", "true"])
+        try:
+            snap = json.loads(run_cli(["snapshot", "--json"])[1])
+            titles = [t["title"] for t in snap["threads"]]
+            self.assertTrue(titles, "test ledger should have threads by now")
+            self.assertTrue(all(re.fullmatch(r"Thread \d+", t) for t in titles), titles)
+            self.assertEqual(snap["account"]["label"], "account hidden")
+            self.assertTrue(all(t["cwd"] is None for t in snap["threads"]))
+        finally:
+            run_cli(["config", "set", "hide_titles", "false"])
+        snap = json.loads(run_cli(["snapshot", "--json"])[1])
+        self.assertFalse(all(re.fullmatch(r"Thread \d+", t["title"]) for t in snap["threads"]))
 
     def test_hook_never_crashes(self):
         with mock.patch.object(sys, "stdin", io.StringIO("this is not json")), \

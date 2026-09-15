@@ -1,6 +1,6 @@
 {
   "name": "is-gpt-nerfed",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Transparent, user-controlled detection of silent model downgrades in Codex sessions: a zero-token passive scan of the session rollout on every turn, plus ModelTrace fingerprint probes run in ephemeral forks of the thread (the mechanism behind /side) on a schedule you choose. Verdicts are delivered by a snarky Codex pet.",
   "author": {
     "name": "is-gpt-nerfed contributors"
@@ -24,7 +24,7 @@
           "hooks": [
             {
               "type": "command",
-              "command": "sh -c 'python3 \"${PLUGIN_ROOT:-/Users/imac/is-gpt-nerfed/plugin}/skills/is-gpt-nerfed/scripts/nerfed\" hook --event SessionStart'",
+              "command": "sh -c 'python3 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/skills/is-gpt-nerfed/scripts/nerfed\" hook --event SessionStart'",
               "timeout": 10,
               "statusMessage": "is-gpt-nerfed: registering session"
             }
@@ -36,7 +36,7 @@
           "hooks": [
             {
               "type": "command",
-              "command": "sh -c 'python3 \"${PLUGIN_ROOT:-/Users/imac/is-gpt-nerfed/plugin}/skills/is-gpt-nerfed/scripts/nerfed\" hook --event UserPromptSubmit'",
+              "command": "sh -c 'python3 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/skills/is-gpt-nerfed/scripts/nerfed\" hook --event UserPromptSubmit'",
               "timeout": 10,
               "additionalContextLimit": 4000
             }
@@ -49,7 +49,7 @@
           "hooks": [
             {
               "type": "command",
-              "command": "sh -c 'python3 \"${PLUGIN_ROOT:-/Users/imac/is-gpt-nerfed/plugin}/skills/is-gpt-nerfed/scripts/nerfed\" hook --event PreToolUse'",
+              "command": "sh -c 'python3 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/skills/is-gpt-nerfed/scripts/nerfed\" hook --event PreToolUse'",
               "timeout": 5,
               "additionalContextLimit": 4000
             }
@@ -61,7 +61,7 @@
           "hooks": [
             {
               "type": "command",
-              "command": "sh -c 'python3 \"${PLUGIN_ROOT:-/Users/imac/is-gpt-nerfed/plugin}/skills/is-gpt-nerfed/scripts/nerfed\" hook --event Stop'",
+              "command": "sh -c 'python3 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/skills/is-gpt-nerfed/scripts/nerfed\" hook --event Stop'",
               "timeout": 20,
               "statusMessage": "is-gpt-nerfed: scanning session for silent downgrades"
             }
@@ -73,7 +73,7 @@
           "hooks": [
             {
               "type": "command",
-              "command": "sh -c 'python3 \"${PLUGIN_ROOT:-/Users/imac/is-gpt-nerfed/plugin}/skills/is-gpt-nerfed/scripts/nerfed\" hook --event SessionEnd'",
+              "command": "sh -c 'python3 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/skills/is-gpt-nerfed/scripts/nerfed\" hook --event SessionEnd'",
               "timeout": 5
             }
           ]

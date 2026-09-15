@@ -65,6 +65,8 @@ struct SettingsView: View {
                     }
                 }
                 RowSeparator()
+                row("Hide thread titles and account (for screenshots)") { toggle("hide_titles", cfg?.hideTitles ?? false) }
+                RowSeparator()
                 row("Launch at login") {
                     if plain {
                         PlainSwitch(on: store.launchAtLogin)

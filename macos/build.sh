@@ -1,6 +1,10 @@
 #!/bin/sh
 # Build IsGPTNerfed.app (menu bar app) with SwiftPM and assemble an ad-hoc signed bundle.
-# Usage: ./macos/build.sh [--run]     (needs Xcode 26+ / macOS 26 SDK)
+# Usage: ./macos/build.sh [--run | --install | --zip]     (needs Xcode 26+ / macOS 26 SDK)
+#   --run      launch from the build folder
+#   --install  copy to ~/Applications and launch
+#   --zip      write dist/IsGPTNerfed-<version>.zip for a GitHub release (ad-hoc signed: first launch needs
+#              right-click → Open, or `xattr -dr com.apple.quarantine ~/Applications/IsGPTNerfed.app`)
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "$HERE"
@@ -35,4 +39,11 @@ case "${1:-}" in
     rm -rf "$DEST" && cp -R "$APP" "$DEST"
     open "$DEST"
     echo "installed to $DEST and launched (menu bar); enable 'Launch at login' in the panel's settings" ;;
+  --zip)
+    VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$HERE/Info.plist")"
+    DIST="$HERE/../dist"; mkdir -p "$DIST"
+    ZIP="$DIST/IsGPTNerfed-$VERSION.zip"; rm -f "$ZIP"
+    ditto -c -k --keepParent "$APP" "$ZIP"
+    shasum -a 256 "$ZIP" | tee "$ZIP.sha256"
+    echo "release archive: $ZIP" ;;
 esac
