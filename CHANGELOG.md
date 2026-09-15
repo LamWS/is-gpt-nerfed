@@ -7,9 +7,10 @@
   else moves. Right-click for Probe, Copy report, Reveal folder. Settings is a page of its own. Fresh session sits
   below the threads; the header is the chip face with one short line per fact; the panel is a little narrower.
   The Report window is gone (the report lives in the rows; `nerfed report` remains).
-- Update check: every 10 minutes the app asks GitHub for the latest release tag (one request; `check_updates` switches
-  it off) and shows "vX.Y.Z is out · update" in the footer, with one notification per new version. Failures are
-  silent.
+- Self-update: every 10 minutes the app asks GitHub for the latest release tag (one request; `check_updates`
+  switches it off) and shows "vX.Y.Z is out · update" in the footer, with one notification per new version. Clicking
+  it downloads the release zip, verifies its sha256, replaces the app (the old copy goes to the Trash) and relaunches
+  (`nerfed update-install`). Failed checks are silent.
 - "Open folder in Finder" (right-click) now opens the thread's folder; it used to only activate Finder, which showed
   whatever window was in front.
 - Copy report moved to the row's right-click menu. The prompt-language row left Settings: the probes use

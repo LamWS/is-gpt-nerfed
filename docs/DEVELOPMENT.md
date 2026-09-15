@@ -111,10 +111,13 @@ The app also logs to the unified log (Console.app, subsystem `is-gpt-nerfed`).
 
 ## Release
 
-Tag releases `vX.Y.Z` and attach the zip: the app asks GitHub every 10 minutes for the latest release tag
+Tag releases `vX.Y.Z` and attach the zip and its `.sha256` (`build.sh --zip` writes both): the app asks GitHub every
+10 minutes for the latest release tag
 (`nerfed update-check`, result in `~/.codex/is-gpt-nerfed/update.json`, `check_updates` to switch it off) and shows
-"vX.Y.Z is out · update" in the footer, with one notification per new version. A failed check (offline, or a 404
-while the repository is private) is recorded in update.json and shown nowhere.
+"vX.Y.Z is out · update" in the footer, with one notification per new version. Clicking it runs
+`nerfed update-install` detached: download the zip, verify the sha256, stop the app, move the old bundle to the
+Trash, put the new one in its place, strip quarantine, relaunch. A failed check (offline, or a 404 while the
+repository is private) is recorded in update.json and shown nowhere; a failed install shows "Update failed · retry".
 
 ```bash
 ./macos/build.sh --zip                      # dist/IsGPTNerfed-<version>.zip + .sha256

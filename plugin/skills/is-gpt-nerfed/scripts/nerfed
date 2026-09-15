@@ -2139,7 +2139,163 @@ def update_status(cfg: dict | None = None) -> dict:
     checked = parse_iso(u.get("checked")) if u.get("checked") else None
     return {"current": VERSION, "latest": latest, "available": available, "url": u.get("url") or RELEASES_URL,
             "checked": u.get("checked"), "checked_ago": ago(checked) if checked else None, "error": u.get("error"),
+            "status": u.get("status"), "has_archive": bool(u.get("asset_url")),
             "enabled": bool((cfg if cfg is not None else load_config()).get("check_updates", True))}
+
+
+def fetch_latest_release(u: dict) -> dict:
+    """One request to GitHub: the latest release, its zip and its .sha256 (build.sh --zip writes both)."""
+    import urllib.error
+    import urllib.request
+    rec = {**{k: u.get(k) for k in ("latest", "url", "asset_url", "sha256_url", "notified", "status", "installed")},
+           "checked": iso(), "error": None}
+    rec["url"] = rec.get("url") or RELEASES_URL
+    req = urllib.request.Request(RELEASES_API, headers={"User-Agent": f"is-gpt-nerfed/{VERSION}", "Accept": "application/vnd.github+json"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        assets = [a for a in (data.get("assets") or []) if isinstance(a, dict)]
+        zips = sorted((a for a in assets if str(a.get("name", "")).lower().endswith(".zip")),
+                      key=lambda a: (not str(a.get("name", "")).startswith("IsGPTNerfed"), str(a.get("name", ""))))
+        sums = [a for a in assets if str(a.get("name", "")).lower().endswith(".sha256")]
+        rec.update(latest=str(data.get("tag_name") or "").lstrip("v") or None, name=data.get("name"),
+                   url=data.get("html_url") or RELEASES_URL, published_at=data.get("published_at"),
+                   asset_url=zips[0].get("browser_download_url") if zips else None,
+                   sha256_url=sums[0].get("browser_download_url") if sums else None)
+    except urllib.error.HTTPError as e:
+        rec["error"] = f"HTTP {e.code}"  # 404 while the repository is private: nothing to show
+    except Exception as e:
+        rec["error"] = str(e)[:160]
+    return rec
+
+
+def cmd_update_install(args) -> int:
+    """Download the latest release, verify its checksum, replace the app bundle (the old one goes to the Trash) and
+    relaunch it. What the panel's update link runs, detached, so it survives the app it replaces."""
+    import hashlib
+    import plistlib
+    import shutil
+    import signal
+    import tempfile
+    import urllib.request
+    import zipfile
+    u = read_json(UPDATE_PATH, {}) or {}
+    if not u.get("asset_url") or (u.get("latest") and version_tuple(u["latest"]) <= version_tuple(VERSION) and not args.force):
+        u = fetch_latest_release(u)
+        write_json(UPDATE_PATH, u)
+    latest, asset = u.get("latest"), u.get("asset_url")
+
+    def fail(msg: str) -> int:
+        log_error(f"update install failed: {msg}")
+        write_json(UPDATE_PATH, {**(read_json(UPDATE_PATH, {}) or {}), "status": f"failed: {msg}"[:200]})
+        print(f"update failed: {msg}")
+        return 1
+
+    if not asset:
+        return fail(u.get("error") or "no release archive found")
+    if not args.force and latest and version_tuple(latest) <= version_tuple(VERSION):
+        return fail(f"{latest} is not newer than {VERSION}")
+    dest = args.app or next((p for p in (os.path.expanduser("~/Applications/IsGPTNerfed.app"), "/Applications/IsGPTNerfed.app")
+                             if os.path.isdir(p)), None)
+    if not dest or not os.path.isdir(dest):
+        return fail("cannot find the installed IsGPTNerfed.app")
+    write_json(UPDATE_PATH, {**u, "status": "downloading"})
+    log_event("update_install", latest=latest, asset=asset, app=dest)
+    headers = {"User-Agent": f"is-gpt-nerfed/{VERSION}"}
+    tmp = tempfile.mkdtemp(prefix="is-gpt-nerfed-update-")
+    zip_path = os.path.join(tmp, "update.zip")
+    try:
+        with urllib.request.urlopen(urllib.request.Request(asset, headers=headers), timeout=60) as resp, open(zip_path, "wb") as f:
+            total = 0
+            while True:
+                chunk = resp.read(1 << 20)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > 300 << 20:
+                    raise ValueError("archive larger than 300 MB")
+                f.write(chunk)
+    except Exception as e:
+        return fail(f"download: {e}")
+    if u.get("sha256_url"):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(u["sha256_url"], headers=headers), timeout=30) as resp:
+                expected = resp.read().decode("utf-8", "replace").split()[0].strip().lower()
+            h = hashlib.sha256()
+            with open(zip_path, "rb") as f:
+                for chunk in iter(lambda: f.read(1 << 20), b""):
+                    h.update(chunk)
+            if h.hexdigest() != expected:
+                return fail("sha256 mismatch: the archive is not the one the release lists")
+        except Exception as e:
+            return fail(f"checksum: {e}")
+    xdir = os.path.join(tmp, "x")
+    os.makedirs(xdir, exist_ok=True)
+    try:
+        if shutil.which("ditto"):
+            subprocess.run(["ditto", "-x", "-k", zip_path, xdir], check=True, capture_output=True)
+        else:
+            with zipfile.ZipFile(zip_path) as z:
+                z.extractall(xdir)
+    except Exception as e:
+        return fail(f"extract: {e}")
+    new_app = None
+    for root, dirs, _files in os.walk(xdir):
+        hit = next((d for d in sorted(dirs) if d.endswith(".app")), None)
+        if hit:
+            new_app = os.path.join(root, hit)
+            break
+        if root[len(xdir):].count(os.sep) >= 2:
+            dirs[:] = []
+    if not new_app:
+        return fail("no .app inside the archive")
+    try:
+        with open(os.path.join(new_app, "Contents", "Info.plist"), "rb") as f:
+            got = str(plistlib.load(f).get("CFBundleShortVersionString") or "")
+    except Exception as e:
+        return fail(f"Info.plist: {e}")
+    if latest and version_tuple(got) != version_tuple(latest):
+        return fail(f"the archive is version {got}, the release says {latest}")
+    pid = int(args.pid) if args.pid else None
+    if pid and pid_alive(pid):  # the app that asked for this: stop it before swapping its bundle
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except Exception:
+            pass
+        for _ in range(60):
+            if not pid_alive(pid):
+                break
+            time.sleep(0.25)
+    elif sys.platform == "darwin" and not args.no_launch:
+        subprocess.run(["pkill", "-x", "IsGPTNerfed"], capture_output=True)
+        time.sleep(1)
+    backup_dir = args.backup_dir or os.path.expanduser("~/.Trash")
+    if not os.path.isdir(backup_dir):
+        backup_dir = tmp
+    backup = os.path.join(backup_dir, f"IsGPTNerfed-{VERSION}-{int(now())}.app")
+    try:
+        shutil.move(dest, backup)
+    except Exception as e:
+        return fail(f"cannot move the old app aside: {e}")
+    try:
+        shutil.move(new_app, dest)
+    except Exception as e:
+        try:
+            shutil.move(backup, dest)
+        except Exception:
+            pass
+        return fail(f"cannot put the new app in place: {e}")
+    if sys.platform == "darwin":
+        subprocess.run(["xattr", "-dr", "com.apple.quarantine", dest], capture_output=True)
+    write_json(UPDATE_PATH, {**u, "status": "installed", "installed": got, "installed_at": iso(), "error": None})
+    log_event("update_installed", version=got, app=dest, backup=backup)
+    if sys.platform == "darwin" and not args.no_launch:
+        for _ in range(8):  # LaunchServices can lag right after the swap
+            if subprocess.run(["open", dest], capture_output=True).returncode == 0:
+                break
+            time.sleep(1)
+    print(f"installed {got} at {dest} (previous copy: {backup})")
+    return 0
 
 
 def maybe_check_updates(cfg: dict) -> dict:
@@ -2162,21 +2318,8 @@ def maybe_check_updates(cfg: dict) -> dict:
 
 def cmd_update_check(args) -> int:
     """One request to GitHub: the latest release tag. Notifies once per new version."""
-    import urllib.error
-    import urllib.request
     cfg = load_config()
-    u = read_json(UPDATE_PATH, {}) or {}
-    req = urllib.request.Request(RELEASES_API, headers={"User-Agent": f"is-gpt-nerfed/{VERSION}", "Accept": "application/vnd.github+json"})
-    rec = {"checked": iso(), "latest": u.get("latest"), "url": u.get("url") or RELEASES_URL, "error": None, "notified": u.get("notified")}
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        rec.update(latest=str(data.get("tag_name") or "").lstrip("v") or None, name=data.get("name"),
-                   url=data.get("html_url") or RELEASES_URL, published_at=data.get("published_at"))
-    except urllib.error.HTTPError as e:
-        rec["error"] = f"HTTP {e.code}"  # 404 while the repository is private: nothing to show
-    except Exception as e:
-        rec["error"] = str(e)[:160]
+    rec = fetch_latest_release(read_json(UPDATE_PATH, {}) or {})
     available = bool(rec.get("latest")) and version_tuple(rec["latest"]) > version_tuple(VERSION)
     log_event("update_check", latest=rec.get("latest"), available=available, error=rec.get("error"))
     if available and rec.get("notified") != rec["latest"]:
@@ -2948,6 +3091,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_teardown)
     s = sub.add_parser("update-check", help="ask GitHub for the latest release once (the app does this every 10 min while check_updates is on)")
     s.set_defaults(fn=cmd_update_check)
+    s = sub.add_parser("update-install", help="download the latest release, replace the app and relaunch it (what the panel's update link does)")
+    s.add_argument("--app", help="path of the installed IsGPTNerfed.app (default: ~/Applications, then /Applications)")
+    s.add_argument("--pid", help="pid of the running app, stopped before the swap")
+    s.add_argument("--backup-dir", help="where the previous copy goes (default: the Trash)")
+    s.add_argument("--no-launch", action="store_true", help="do not relaunch afterwards")
+    s.add_argument("--force", action="store_true", help="install even if the release is not newer")
+    s.set_defaults(fn=cmd_update_install)
     s = sub.add_parser("doctor", help="check the installation; --fork also creates a real ephemeral fork (no inference)")
     s.add_argument("--fork", action="store_true")
     s.add_argument("--live", action="store_true", help="re-query hook trust instead of using the cached answer")

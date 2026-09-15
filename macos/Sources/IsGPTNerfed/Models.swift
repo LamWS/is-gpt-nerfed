@@ -47,6 +47,8 @@ struct UpdateInfo: Codable {
     var checkedAgo: String?
     var error: String?
     var enabled: Bool?
+    var status: String?      // downloading | installed | failed: …
+    var hasArchive: Bool?
 }
 
 /// Whether the plugin (bundled in this app or from a checkout) is registered with Codex.

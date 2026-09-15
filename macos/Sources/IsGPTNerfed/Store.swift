@@ -18,6 +18,7 @@ final class Store {
     var refreshing = false
     var lastRefresh: Date?
     var installing = false
+    var updating = false
     var launchAtLogin: Bool = SMAppService.mainApp.status == .enabled
     private var pollTask: Task<Void, Never>?
     private var lastStatusKey = ""
@@ -181,6 +182,25 @@ final class Store {
         pb.clearContents()
         pb.setString(text, forType: .string)
         appLog.notice("report copied to the clipboard")
+    }
+
+    /// The footer's update link: `nerfed update-install` downloads the release, verifies it, stops this app, swaps
+    /// the bundle and relaunches. It runs detached so it outlives the app it replaces.
+    func installUpdate() {
+        appLog.notice("update requested from the panel")
+        updating = true
+        do {
+            try DGC.spawnDetached(["update-install", "--app", Bundle.main.bundlePath, "--pid", String(ProcessInfo.processInfo.processIdentifier)])
+        } catch {
+            updating = false
+            lastError = error.localizedDescription
+            return
+        }
+        Task {  // still running two minutes later means it failed; the link comes back with the reason
+            try? await Task.sleep(for: .seconds(120))
+            updating = false
+            await refresh()
+        }
     }
 
     func openURL(_ s: String) {

@@ -349,9 +349,16 @@ struct PanelView: View {
         HStack(spacing: 16) {
             TextButton(title: showSettings ? "Done" : "Settings") { withAnimation(.snappy(duration: 0.25)) { showSettings.toggle() } }
             Spacer()
-            if let u = store.snapshot?.update, u.available == true, let latest = u.latest {
-                TextButton(title: "v\(latest) is out · update", color: .primary) { store.openURL(u.url ?? "https://github.com/kiyoakii/is-gpt-nerfed/releases") }
-                    .help("A newer release is on GitHub. Download the zip and replace the app; the plugin inside updates with it.")
+            if store.updating {
+                Text("Updating…").font(Type.text).foregroundStyle(.secondary)
+            } else if let u = store.snapshot?.update, u.available == true, let latest = u.latest {
+                let failed = (u.status ?? "").hasPrefix("failed")
+                if u.hasArchive == true {
+                    TextButton(title: failed ? "Update failed · retry" : "v\(latest) is out · update", color: .primary) { store.installUpdate() }
+                        .help(failed ? (u.status ?? "") : "Downloads v\(latest), replaces this app and relaunches it. The previous copy goes to the Trash.")
+                } else {  // a release without a zip: open the page
+                    TextButton(title: "v\(latest) is out", color: .primary) { store.openURL(u.url ?? "https://github.com/kiyoakii/is-gpt-nerfed/releases") }
+                }
             } else if let v = store.snapshot?.version {
                 Text("v\(v)" + (store.snapshot?.demo == true ? " · sample data" : "")).font(Type.text).foregroundStyle(.tertiary)
             }

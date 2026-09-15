@@ -660,6 +660,47 @@ class SnapshotReportTests(unittest.TestCase):
         self.assertFalse(snap["update"]["available"])
         os.remove(dgc.UPDATE_PATH)
 
+    def test_update_install_swaps_the_app_bundle(self):
+        import hashlib, plistlib, zipfile
+        base = os.path.join(TMP, "update-test"); os.makedirs(base, exist_ok=True)
+
+        def fake_app(root, version):
+            os.makedirs(os.path.join(root, "Contents", "MacOS"), exist_ok=True)
+            with open(os.path.join(root, "Contents", "Info.plist"), "wb") as f:
+                plistlib.dump({"CFBundleShortVersionString": version, "CFBundleIdentifier": "dev.is-gpt-nerfed.menubar"}, f)
+            with open(os.path.join(root, "Contents", "MacOS", "IsGPTNerfed"), "w") as f:
+                f.write("#!/bin/sh\n")
+
+        installed = os.path.join(base, "Applications", "IsGPTNerfed.app"); fake_app(installed, "0.0.1")
+        staged = os.path.join(base, "stage", "IsGPTNerfed.app"); fake_app(staged, "99.0.0")
+        zip_path = os.path.join(base, "IsGPTNerfed-99.0.0.zip")
+        with zipfile.ZipFile(zip_path, "w") as z:
+            for root, _dirs, files in os.walk(staged):
+                for name in files:
+                    full = os.path.join(root, name)
+                    z.write(full, os.path.relpath(full, os.path.dirname(staged)))
+        with open(zip_path + ".sha256", "w") as f:
+            f.write(hashlib.sha256(open(zip_path, "rb").read()).hexdigest() + "  IsGPTNerfed-99.0.0.zip\n")
+        dgc.write_json(dgc.UPDATE_PATH, {"checked": dgc.iso(), "latest": "99.0.0", "url": "https://example.test/rel",
+                                         "asset_url": "file://" + zip_path, "sha256_url": "file://" + zip_path + ".sha256", "error": None})
+        backups = os.path.join(base, "trash"); os.makedirs(backups)
+        code, out = run_cli(["update-install", "--app", installed, "--backup-dir", backups, "--no-launch"])
+        self.assertEqual(code, 0, out)
+        with open(os.path.join(installed, "Contents", "Info.plist"), "rb") as f:
+            self.assertEqual(plistlib.load(f)["CFBundleShortVersionString"], "99.0.0", "the new bundle sits where the old one was")
+        self.assertTrue(any(n.startswith("IsGPTNerfed-") and n.endswith(".app") for n in os.listdir(backups)), "the old bundle was kept")
+        self.assertEqual(dgc.read_json(dgc.UPDATE_PATH)["status"], "installed")
+        # a tampered archive is refused before anything is touched
+        with open(zip_path, "ab") as f:
+            f.write(b"x")
+        fake_app(installed, "0.0.1")
+        code, out = run_cli(["update-install", "--app", installed, "--backup-dir", backups, "--no-launch", "--force"])
+        self.assertNotEqual(code, 0)
+        self.assertIn("sha256 mismatch", dgc.read_json(dgc.UPDATE_PATH)["status"])
+        with open(os.path.join(installed, "Contents", "Info.plist"), "rb") as f:
+            self.assertEqual(plistlib.load(f)["CFBundleShortVersionString"], "0.0.1", "nothing was replaced")
+        os.remove(dgc.UPDATE_PATH)
+
     def test_upgrade_shows_as_good_news(self):
         snap = json.loads(run_cli(["snapshot", "--json", "--demo"])[1])
         t = next(t for t in snap["threads"] if t["id"] == "docs")

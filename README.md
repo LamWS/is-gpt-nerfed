@@ -53,7 +53,8 @@ Match is silent.
 **App, macOS 26.** Download the zip from [Releases](https://github.com/kiyoakii/is-gpt-nerfed/releases), move
 IsGPTNerfed to Applications, open it (right-click → Open the first time), click the face in the menu bar, press
 **Install**. That registers the bundled plugin with Codex and trusts its hooks. Done. When a newer release is out,
-the panel's footer says so and a notification arrives once; download the new zip and replace the app.
+the panel's footer says so (and a notification arrives once); click it and the app downloads the new build, checks
+its checksum, replaces itself and relaunches.
 
 **Without the app, any macOS.**
 
