@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 import OSLog
@@ -16,7 +17,6 @@ final class Store {
     var lastError: String?
     var refreshing = false
     var lastRefresh: Date?
-    var reportText: String?
     var installing = false
     var launchAtLogin: Bool = SMAppService.mainApp.status == .enabled
     private var pollTask: Task<Void, Never>?
@@ -173,8 +173,16 @@ final class Store {
         await refresh()
     }
 
-    func loadReport() async {
-        do { reportText = try await DGC.run(["report"], timeout: 30) } catch { reportText = error.localizedDescription }
+    /// "Copy report" in a row: the thread's plain-text report onto the clipboard.
+    func copy(_ text: String) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+        appLog.notice("report copied to the clipboard")
+    }
+
+    func reveal(_ path: String) {
+        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path)
     }
 
     func setLaunchAtLogin(_ enabled: Bool) {

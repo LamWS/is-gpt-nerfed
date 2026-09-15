@@ -452,6 +452,8 @@ class ForkProbeTests(unittest.TestCase):
         snap = json.loads(run_cli(["snapshot", "--json"])[1])
         t = next(t for t in snap["threads"] if t["id"] == "acct-thread-A")
         self.assertFalse(t["unverified"])
+        self.assertEqual(t["probes"][0]["id"], rec["id"], "the thread carries its own probe history for the panel's report")
+        self.assertIn(rec["id"], t["report_text"])
         self.assertFalse(t["last_probe"]["stale_account"])
         self.assertFalse(t["due"], "just probed under this account")
         # switch accounts: the thread stays (threads are shared), but its verdict no longer vouches for this account
@@ -570,6 +572,28 @@ class ForkProbeTests(unittest.TestCase):
         with mock.patch.object(sys, "stdin", io.StringIO("this is not json")), \
                 mock.patch.object(sys.stdin, "isatty", return_value=False, create=True):
             self.assertEqual(dgc.main(["hook"]), 0)
+
+
+
+class SnapshotReportTests(unittest.TestCase):
+    def test_snapshot_carries_per_thread_reports(self):
+        snap = json.loads(run_cli(["snapshot", "--json", "--demo"])[1])
+        t = next(t for t in snap["threads"] if t["id"] == "payments")
+        self.assertEqual(t["probes"][0]["id"], t["last_probe"]["id"])
+        self.assertEqual(t["probes"][0]["results"][0]["model"], "gpt-5.6-luna")
+        self.assertEqual([e["active"] for e in t["evidence"]], [True, False])
+        self.assertIn("Fingerprint · gpt-5.6-luna 91%", t["report_text"])
+        self.assertIn("reverted", t["report_text"])
+        self.assertTrue(snap["global_probes"])
+        self.assertTrue(snap["global_report_text"].startswith("is-gpt-nerfed · Fresh session"))
+        self.assertIn("Earlier · Match", snap["global_report_text"])
+
+    def test_probe_line_reads_like_the_panel(self):
+        line = dgc.probe_line({"id": "abc", "verdict": "MISMATCH", "direction": "downgrade", "prediction": "gpt-5.6-luna", "probability": 0.91,
+                               "expected": "gpt-6-astra", "p_expected": 0.03, "used_outputs": 3, "queries": 3, "elapsed_s": 41.2, "finished_ago": "4m ago"})
+        self.assertEqual(line, "Downgrade · gpt-5.6-luna 91%, declared 3% · 3 of 3 answers · 41 s · 4m ago · probe abc")
+        failed = dgc.probe_line({"id": "def", "verdict": "INVALID", "status": "failed", "errors": ["fork timed out"], "retries": 1})
+        self.assertEqual(failed, "Invalid · fork timed out · retried once · probe def")
 
 
 if __name__ == "__main__":

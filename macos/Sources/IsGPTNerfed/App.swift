@@ -56,9 +56,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 await store.refresh()
                 try? await Task.sleep(for: .milliseconds(250))
             }
-            for (suffix, settings) in [("", false), ("-settings", true)] {
-                let renderer = ImageRenderer(content: PanelView(showSettings: settings).environment(store).environment(\.plainRendering, true)
-                                                .frame(width: 460).padding(8).background(Color(nsColor: .windowBackgroundColor)))
+            let variants: [(String, Bool, String?)] = [("", false, nil), ("-settings", true, nil), ("-detail", false, "payments")]
+            for (suffix, settings, open) in variants {
+                let renderer = ImageRenderer(content: PanelView(showSettings: settings, open: open).environment(store).environment(\.plainRendering, true)
+                                                .frame(width: 440).padding(8).background(Color(nsColor: .windowBackgroundColor)))
                 renderer.scale = 2
                 if let img = renderer.nsImage, let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
                    let png = rep.representation(using: .png, properties: [:]) {
@@ -101,27 +102,5 @@ struct IsGPTNerfedApp: App {
             MenuBarFace.label(alert: store.isAlert, warn: store.isWarn, running: store.isRunning)
         }
         .menuBarExtraStyle(.window)
-
-        Window("is-gpt-nerfed report", id: "report") {
-            ReportView().environment(store)
-        }
-        .windowResizability(.contentSize)
-        .defaultSize(width: 760, height: 520)
-    }
-}
-
-struct ReportView: View {
-    @Environment(Store.self) private var store
-
-    var body: some View {
-        ScrollView([.vertical, .horizontal]) {
-            Text(store.reportText ?? "Loading report…")
-                .font(.system(.body, design: .monospaced))
-                .textSelection(.enabled)
-                .padding(16)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .frame(minWidth: 640, minHeight: 400)
-        .task { await store.loadReport() }
     }
 }

@@ -18,6 +18,8 @@ struct Snapshot: Codable {
     var globalProbe: ProbeSummary?
     var globalRunning: Bool?
     var globalAlert: Bool?
+    var globalProbes: [ProbeSummary]?
+    var globalReportText: String?
     var account: AccountInfo?
     var threads: [ThreadInfo]
     var recentProbes: [ProbeSummary]
@@ -109,6 +111,25 @@ struct ThreadInfo: Codable, Identifiable {
     var lastEvidence: String?
     var lastEvidenceAgo: String?
     var lastProbe: ProbeSummary?
+    var probes: [ProbeSummary]?          // this thread's probe history, newest first (the in-place report)
+    var evidence: [EvidenceInfo]?        // hard and soft findings, newest first, reverted ones included
+    var reportText: String?              // plain text of the report, for the clipboard
+}
+
+/// One scanner finding as the panel shows it; `active` is false once a later change reverted it.
+struct EvidenceInfo: Codable, Identifiable {
+    var text: String
+    var ts: String?
+    var ago: String?
+    var severity: String?
+    var active: Bool?
+    var id: String { (ts ?? "") + text }
+}
+
+/// One row of the fingerprint attribution ("gpt-5.6-luna 91%").
+struct Attribution: Codable, Hashable {
+    var model: String?
+    var probability: Double?
 }
 
 struct ProbeSummary: Codable, Identifiable {
@@ -138,6 +159,8 @@ struct ProbeSummary: Codable, Identifiable {
     var accountState: String?   // current | other | unknown
     var retryable: Bool?
     var retries: Int?
+    var results: [Attribution]?
+    var started: String?
 
     static func pct(_ p: Double?) -> String {
         guard let p else { return "" }

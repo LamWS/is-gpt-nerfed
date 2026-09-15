@@ -43,8 +43,6 @@ struct SettingsView: View {
                     .frame(width: 190)
                 }
                 RowSeparator()
-                row("Confirm a suspicious round with a second one") { toggle("confirm_uncertain", cfg?.confirmUncertain ?? true) }
-                RowSeparator()
                 row("Halt the thread after a mismatch") { toggle("halt_on_mismatch", cfg?.haltOnMismatch ?? false) }
                 RowSeparator()
                 row("Scan rollouts on every turn") { toggle("passive", cfg?.passive ?? true) }

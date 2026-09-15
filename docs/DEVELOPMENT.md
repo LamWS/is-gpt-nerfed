@@ -44,7 +44,8 @@ NERFED_DEMO=1 ~/Applications/IsGPTNerfed.app/Contents/MacOS/IsGPTNerfed --render
   `turn/start` per fork, collect the final agent message. Server-initiated requests (approvals) are refused.
 - A thread whose newest turn is live cannot be forked at that turn (`identifies an in-progress turn`); the previous
   finished turn is used, else the probe waits up to `busy_wait_s` (600 s) and reports a retryable Invalid.
-- One automatic retry on transport failures; a Suspicious first round triggers a second round (six answers).
+- One automatic retry on transport failures. A Suspicious verdict stands until the next probe; `confirm_uncertain` (off by
+  default) adds one more round of three answers before it is final.
 - Verdict gate (`mismatch_confidence` 0.8): Mismatch needs p(top) ≥ 0.8, p(declared) ≤ 0.2 and a fused z-score margin
   ≥ 0.5σ, because ModelTrace's calibrated softmax amplifies small gaps.
 - Fresh-session probe: `thread/start` with `ephemeral: true`, no history.
@@ -96,7 +97,7 @@ The app also logs to the unified log (Console.app, subsystem `is-gpt-nerfed`).
 | `sound` | `true` | Codex notification sound on a downgrade |
 | `halt_on_mismatch` | `false` | deny work tools after a mismatch until `nerfed resume` |
 | `mismatch_confidence` | `0.8` | verdict gate |
-| `confirm_uncertain` | `true` | second round when Suspicious |
+| `confirm_uncertain` | `false` | second round when Suspicious |
 | `busy_wait_s` | `600` | how long to wait for a live turn |
 | `hide_titles` | `false` | screenshot mode |
 | `codex_bin` | auto | path to the codex binary (found on PATH or inside the ChatGPT/Codex app) |

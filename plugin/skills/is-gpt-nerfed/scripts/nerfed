@@ -39,7 +39,7 @@ sys.path.insert(0, HERE)
 import codex_appserver as cas  # noqa: E402
 import modeltrace_core as core  # noqa: E402
 
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 DGC_BIN = os.path.abspath(__file__)
 SKILL_DIR = os.path.dirname(HERE)
 PLUGIN_ROOT = os.environ.get("PLUGIN_ROOT") or os.environ.get("CLAUDE_PLUGIN_ROOT") or os.path.dirname(os.path.dirname(SKILL_DIR))
@@ -83,7 +83,7 @@ DEFAULT_CONFIG = {
     "sound": True,                   # Codex notification sound on a downgrade verdict
     "halt_on_mismatch": False,       # Guard-style: deny work tools after a mismatch until `nerfed resume`
     "mismatch_confidence": 0.8,      # MISMATCH needs p(top) ≥ this, p(declared) ≤ 1-this and a score margin ≥ 0.5σ
-    "confirm_uncertain": True,       # a SUSPICIOUS first round triggers one more round before the verdict is final
+    "confirm_uncertain": False,      # opt in: a SUSPICIOUS first round triggers one more round (three more answers)
     "hide_titles": False,            # panel shows "Thread 1…N" and hides the account label (screenshot mode)
     "fresh_frequency": "manual",     # heartbeat for the fresh-session probe: "30m", "2h" … (time only; "manual" = off)
     "codex_bin": None,
@@ -905,7 +905,7 @@ def fingerprint_verdict(expected: str | None, analysis: dict | None, hard_eviden
 
 
 def needs_confirmation(expected: str | None, outputs: list[dict], cfg: dict) -> bool:
-    if not cfg.get("confirm_uncertain", True) or not outputs:
+    if not cfg.get("confirm_uncertain", False) or not outputs:
         return False
     try:
         analysis = core.analyze_global_outputs(outputs, load_bank())
@@ -1669,6 +1669,64 @@ def db_recent_threads_detailed(since_ms: int, limit: int = 40) -> list[dict]:
     return rows
 
 
+def probe_line(p: dict) -> str:
+    """One-line report of a probe summary: 'Match · gpt-6-astra 100% · 3 of 3 answers · 41 s · 5m ago · probe a1b2c3d4e5'."""
+    v = p.get("verdict") or ("Failed" if p.get("status") == "failed" else "…")
+    word = {"DOWNGRADED!": "Downgraded", "MISMATCH": {"downgrade": "Downgrade", "upgrade": "Upgrade"}.get(p.get("direction") or "", "Rerouted"),
+            "SUSPICIOUS": "Suspicious", "MATCH": "Match", "UNLISTED": "Unlisted", "INVALID": "Invalid"}.get(v, str(v).capitalize())
+    parts = [word]
+    if v == "INVALID" or p.get("status") == "failed":
+        parts.append((p.get("errors") or ["no usable sample"])[0])
+    else:
+        text = p.get("prediction") or "?"
+        if isinstance(p.get("probability"), (int, float)):
+            text += f" {p['probability']:.0%}"
+        if p.get("expected") and p.get("expected") != p.get("prediction") and isinstance(p.get("p_expected"), (int, float)):
+            text += f", declared {p['p_expected']:.0%}"
+        parts.append(text)
+    n, q = p.get("used_outputs"), p.get("queries")
+    if isinstance(n, int) and isinstance(q, int) and q:
+        parts.append(f"{n} of {q} answers")
+    if (p.get("rounds") or 1) > 1:
+        parts.append(f"{p['rounds']} rounds")
+    if p.get("retries"):
+        parts.append("retried once" if p["retries"] == 1 else f"retried {p['retries']}×")
+    if isinstance(p.get("elapsed_s"), (int, float)):
+        parts.append(f"{p['elapsed_s']:.0f} s")
+    if p.get("finished_ago"):
+        parts.append(p["finished_ago"])
+    if p.get("stale_account"):
+        parts.append("account unknown" if p.get("account_state") == "unknown" else "another account")
+    parts.append(f"probe {p.get('id')}")
+    return " · ".join(parts)
+
+
+def evidence_entries(evs: list, active: list, limit: int = 8) -> list[dict]:
+    """Hard and soft findings of one thread for the panel's in-place report, newest first; `active` marks the ones
+    still in effect (the others were reverted by a later change and stay for the record)."""
+    keys = {(a.get("kind"), a.get("ts")) for a in active}
+    rows = [e for e in evs if e.get("severity") in ("hard", "soft")][-limit:]
+    return [{"text": compact_evidence(e), "ts": e.get("ts"), "ago": ago(parse_iso(e.get("ts"))), "severity": e.get("severity"),
+             "active": (e.get("kind"), e.get("ts")) in keys} for e in rows][::-1]
+
+
+def report_text_for(title: str, model: str | None, effort: str | None, probes: list[dict], evidence: list[dict]) -> str:
+    """Plain-text report of one thread (what 'Copy report' puts on the clipboard)."""
+    lines = [f"is-gpt-nerfed · {title} · {model or '?'}" + (f" @ {effort}" if effort else "")]
+    for i, p in enumerate(probes):
+        lines.append(("Last probe" if i == 0 else "Earlier") + " · " + probe_line(p))
+        if i == 0 and p.get("results") and p.get("verdict") not in ("INVALID", None):
+            lines.append("Fingerprint · " + " · ".join(f"{r.get('model')} {(r.get('probability') or 0):.0%}" for r in p["results"]))
+        if i == 0:
+            for err in p.get("errors") or []:
+                lines.append(f"Problem · {err}")
+    if not probes:
+        lines.append("No probe yet")
+    for e in evidence:
+        lines.append(f"Evidence · {e['text']}" + (f" · {e['ago']}" if e.get("ago") else "") + ("" if e.get("active", True) else " · reverted"))
+    return "\n".join(lines)
+
+
 def probe_summary(row: dict, current: str | None = None) -> dict:
     full = read_json(probe_path(row["id"]), {}) or {}
     errors = full.get("errors") or []
@@ -1686,7 +1744,8 @@ def probe_summary(row: dict, current: str | None = None) -> dict:
         "margin": row.get("margin", full.get("margin")), "confidence": row.get("confidence", full.get("confidence")),
         "used_outputs": row.get("used_outputs"), "queries": (row.get("queries") or 1) * (row.get("rounds") or full.get("rounds") or 1),
         "rounds": row.get("rounds") or full.get("rounds") or 1,
-        "elapsed_s": row.get("elapsed_s"), "errors": errors[:4], "quote": full.get("quote"),
+        "elapsed_s": row.get("elapsed_s"), "errors": errors[:4], "quote": full.get("quote"), "started": full.get("started"),
+        "results": [{"model": r.get("model"), "probability": r.get("probability")} for r in (full.get("results") or [])[:4]],
         "is_downgrade": verdict == "DOWNGRADED!" or (verdict == "MISMATCH" and row.get("direction") == "downgrade"),
         "is_suspicious": verdict == "SUSPICIOUS",
         "retryable": (status == "failed" or verdict == "INVALID") and (not errors or transport_like(errors)),
@@ -1697,10 +1756,13 @@ def probe_summary(row: dict, current: str | None = None) -> dict:
 def demo_snapshot(cfg: dict) -> dict:
     """Synthetic English sample data for screenshots (`nerfed snapshot --demo`). Nothing here is read from disk."""
     t0 = now()
+    cfg = dict(DEFAULT_CONFIG)  # default settings, not this Mac's
 
     def probe(pid, tid, verdict, direction=None, expected="gpt-6-astra", pred="gpt-6-astra", p=1.0, p_exp=None, margin=None,
-              n=3, q=3, ago_s=300, errors=None, status="done", rounds=1, retries=0, mode="fork", stale=False):
+              n=3, q=3, ago_s=300, errors=None, status="done", rounds=1, retries=0, mode="fork", stale=False, results=None):
         return {"id": pid, "thread_id": tid, "mode": mode, "status": status, "finished": iso(t0 - ago_s), "finished_ts": t0 - ago_s,
+                "started": iso(t0 - ago_s - 41),
+                "results": results if results is not None else ([{"model": pred, "probability": p}] if pred and p is not None else []),
                 "account_id": "other0" if stale else "demo00", "stale_account": stale,
                 "finished_ago": ago(t0 - ago_s), "verdict": verdict, "direction": direction, "expected": expected, "prediction": pred,
                 "probability": p, "p_expected": p_exp if p_exp is not None else (None if p is None else (p if pred == expected else round(1 - p, 2))),
@@ -1708,30 +1770,44 @@ def demo_snapshot(cfg: dict) -> dict:
                 "elapsed_s": 41.0, "errors": errors or [], "quote": "", "is_downgrade": verdict == "DOWNGRADED!" or (verdict == "MISMATCH" and direction == "downgrade"),
                 "is_suspicious": verdict == "SUSPICIOUS", "retryable": status == "failed" or verdict == "INVALID", "retries": retries}
 
-    def thread(tid, title, model, effort, turns, ago_s, last, hard=0, soft=0, ev=None, due=False, running=False, halted=False):
+    def thread(tid, title, model, effort, turns, ago_s, last, hard=0, soft=0, ev=None, due=False, running=False, halted=False,
+               probes=None, evidence=None):
         stale = bool(last and last.get("stale_account"))
         return {"id": tid, "title": title, "cwd": "/Users/you/code/" + tid, "model": model, "effort": effort, "updated_ts": t0 - ago_s,
+                "probes": probes if probes is not None else ([last] if last else []), "evidence": evidence or [],
+                "evidence_history": len(evidence or []), "last_evidence_ago": (evidence or [{}])[0].get("ago") if ev else None,
                 "updated": iso(t0 - ago_s), "updated_ago": ago(t0 - ago_s), "active": ago_s < 15 * 60, "turns": turns,
                 "turns_since_probe": min(turns, 5), "due": due or stale, "probe_running": running, "halted": halted, "requested": False,
                 "hard_evidence": hard, "soft_evidence": soft, "last_evidence": ev, "last_probe": last, "unverified": stale,
                 "alert": hard > 0 or bool(last and last["is_downgrade"] and not stale),
                 "suspicious": bool(last and last["is_suspicious"] and not stale)}
 
+    pay_last = probe("a1b2c3d4e5", "payments", "MISMATCH", "downgrade", pred="gpt-5.6-luna", p=0.91, p_exp=0.03, margin=1.31, ago_s=240,
+                     results=[{"model": "gpt-5.6-luna", "probability": 0.91}, {"model": "gpt-6-astra", "probability": 0.03},
+                              {"model": "gpt-5.6-sol", "probability": 0.02}, {"model": "gpt-5.3-codex", "probability": 0.02}])
+    pay_earlier = [probe("9a8b7c6d5e", "payments", "MATCH", p=1.0, margin=0.0, ago_s=7500),
+                   probe("8b7c6d5e4f", "payments", "MATCH", p=0.99, margin=0.0, ago_s=14200)]
+    ci_last = probe("b2c3d4e5f6", "ci-flaky", "SUSPICIOUS", "downgrade", pred="gpt-5.6-sol", p=0.62, p_exp=0.31, margin=0.28, ago_s=660,
+                    results=[{"model": "gpt-5.6-sol", "probability": 0.62}, {"model": "gpt-6-astra", "probability": 0.31},
+                             {"model": "gpt-5.6-luna", "probability": 0.05}])
+    pg_probes = [probe("d4e5f6a7b8", "pg17", "MATCH", expected="gpt-5.6-sol", pred="gpt-5.6-sol", p=1.0, margin=0.0, ago_s=3480, stale=True)]
+    pg_probes += [probe(f"r{i}", "pg17", "MATCH", expected="gpt-5.6-sol", pred="gpt-5.6-sol", p=1.0, ago_s=7200 + i * 3600, stale=True) for i in range(3)]
     threads = [
-        thread("payments", "Refactor payment webhooks", "gpt-6-astra", "xhigh", 14, 120,
-               probe("a1b2c3d4e5", "payments", "MISMATCH", "downgrade", pred="gpt-5.6-luna", p=0.91, p_exp=0.03, margin=1.31, ago_s=240),
-               hard=1, ev="Silent model change: gpt-6-astra → gpt-reserve"),
-        thread("ci-flaky", "Investigate flaky CI on main", "gpt-6-astra", "high", 6, 300,
-               probe("b2c3d4e5f6", "ci-flaky", "SUSPICIOUS", "downgrade", pred="gpt-5.6-sol", p=0.62, p_exp=0.31, margin=0.28, n=6, q=6, rounds=2, ago_s=660)),
+        thread("payments", "Refactor payment webhooks", "gpt-6-astra", "xhigh", 14, 120, pay_last, hard=1,
+               ev="Silent model change: gpt-6-astra → gpt-reserve", probes=[pay_last] + pay_earlier,
+               evidence=[{"text": "Silent model change: gpt-6-astra → gpt-reserve", "ts": iso(t0 - 540), "ago": ago(t0 - 540), "severity": "hard", "active": True},
+                         {"text": "Settings: effort xhigh → medium · was that you?", "ts": iso(t0 - 9000), "ago": ago(t0 - 9000), "severity": "soft", "active": False}]),
+        thread("ci-flaky", "Investigate flaky CI on main", "gpt-6-astra", "high", 6, 300, ci_last),
         thread("oauth", "Add OAuth device flow", "gpt-6-astra", "max", 22, 720,
                probe("c3d4e5f6a7", "oauth", "INVALID", status="failed", pred=None, p=None, p_exp=None, n=0, errors=["codex thread/fork timed out after 45s"], retries=1, ago_s=1200)),
-        thread("pg17", "Migrate to Postgres 17", "gpt-5.6-sol", "high", 9, 3600,
-               probe("d4e5f6a7b8", "pg17", "MATCH", expected="gpt-5.6-sol", pred="gpt-5.6-sol", p=1.0, margin=0.0, ago_s=3480, stale=True)),
+        thread("pg17", "Migrate to Postgres 17", "gpt-5.6-sol", "high", 9, 3600, pg_probes[0], probes=pg_probes),
         thread("relnotes", "Write release notes v2.3", "gpt-6-astra", "medium", 3, 10800, None, due=True),
     ]
     fresh = probe("e5f6a7b8c9", None, "MATCH", p=1.0, margin=0.0, ago_s=1800, mode="fresh")
-    recent = [threads[0]["last_probe"], threads[1]["last_probe"], threads[2]["last_probe"], fresh, threads[3]["last_probe"]]
-    recent += [probe(f"r{i}", "pg17", "MATCH", expected="gpt-5.6-sol", pred="gpt-5.6-sol", p=1.0, ago_s=7200 + i * 3600) for i in range(5)]
+    fresh_probes = [fresh, probe("f6a7b8c9d0", None, "MATCH", p=1.0, margin=0.0, ago_s=5400, mode="fresh")]
+    for t in threads:
+        t["report_text"] = report_text_for(t["title"], t["model"], t["effort"], t["probes"], t["evidence"])
+    recent = [threads[0]["last_probe"], threads[1]["last_probe"], threads[2]["last_probe"], fresh, threads[3]["last_probe"]] + pg_probes[1:]
     return {"generated": iso(), "version": VERSION, "nerfed_bin": DGC_BIN, "ledger": "~/.codex/is-gpt-nerfed", "config": cfg,
             "hooks_last_event": iso(t0 - 12), "hooks_last_event_ago": "12s ago",
             "hooks": {"checked": iso(t0 - 300), "checked_ago": "5m ago", "total": 5, "trusted": 5, "untrusted": 0, "state": "trusted",
@@ -1744,6 +1820,7 @@ def demo_snapshot(cfg: dict) -> dict:
             "overall": {"status": "alert", "downgraded": 1, "suspicious": 1, "unverified": 1, "running": 0,
                         "message": "1 thread downgraded · 1 suspicious · 1 unverified"},
             "default_model": "gpt-6-astra", "default_effort": "high", "global_probe": fresh, "global_running": False, "global_alert": False,
+            "global_probes": fresh_probes, "global_report_text": report_text_for("Fresh session", "gpt-6-astra", "high", fresh_probes, []),
             "threads": threads, "recent_probes": recent, "demo": True}
 
 
@@ -1842,16 +1919,21 @@ def build_snapshot(cfg: dict, hours: float = 48.0) -> dict:
         t["evidence_history"] = sum(1 for e in st.get("evidence") or [] if e.get("severity") in ("hard", "soft"))
         t["last_evidence"] = compact_evidence(active[-1]) if active else None
         t["last_evidence_ago"] = ago(parse_iso(active[-1].get("ts"))) if active else None
+        t["evidence"] = evidence_entries(st.get("evidence") or [], active)
     index_rows = list(iter_jsonl(PROBES_INDEX))
     latest: dict[str, dict] = {}
+    by_thread: dict[str, list] = {}
     for row in index_rows:
         if row.get("thread_id"):
             latest[row["thread_id"]] = row
+            by_thread.setdefault(row["thread_id"], []).append(row)
     out_threads = []
     downgraded = running = suspicious = unverified = 0
     for t in threads.values():
         lp = latest.get(t["id"])
         t["last_probe"] = probe_summary(lp, acct["id"]) if lp else None
+        t["probes"] = [probe_summary(r, acct["id"]) for r in by_thread.get(t["id"], [])[-5:]][::-1]
+        t.setdefault("evidence", [])
         stale = bool(t["last_probe"] and t["last_probe"]["stale_account"])
         t["unverified"] = stale  # verdict obtained under another Codex account: says nothing about this one
         t["updated"] = iso(t["updated_ts"]) if t["updated_ts"] else None
@@ -1897,6 +1979,10 @@ def build_snapshot(cfg: dict, hours: float = 48.0) -> dict:
             t["title"] = f"Thread {i}"
             t["cwd"] = None
         account_label = "account hidden"
+    for t in out_threads:  # the in-place report behind each row (and what Copy report puts on the clipboard)
+        t["report_text"] = report_text_for(t["title"], t.get("model"), t.get("effort"), t.get("probes") or [], t.get("evidence") or [])
+    global_probes = [probe_summary(r, acct["id"]) for r in fresh_rows[-5:]][::-1]
+    global_report_text = report_text_for("Fresh session", default_model, default_effort, global_probes, [])
     hooks = hooks_status(cfg)
     state = read_json(STATE_PATH, {}) or {}
     if state.get("last_status") != status or state.get("last_message") != message:
@@ -1912,8 +1998,9 @@ def build_snapshot(cfg: dict, hours: float = 48.0) -> dict:
                         "running": running, "message": message},
             "default_model": default_model, "default_effort": default_effort,
             "global_probe": global_probe, "global_running": bool(fr), "global_alert": global_alert,
+            "global_probes": global_probes, "global_report_text": global_report_text,
             "account": {"label": account_label, "plan": acct["plan"], "switched_at": acct.get("switched_at"),
-                        "switched_ago": ago(acct.get("switched_ts")) if acct.get("switched_ts") else None,
+                        "switched_ago": ago(acct.get("switched_ts")) if acct.get("switched_ts") and now() - float(acct["switched_ts"]) < 86400 else None,
                         "previous_label": (acct.get("previous") or {}).get("label")},
             "threads": out_threads, "recent_probes": [probe_summary(r, acct["id"]) for r in index_rows[-10:]][::-1]}
     return snap

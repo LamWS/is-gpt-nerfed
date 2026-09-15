@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.1 — 2026-09-15
+
+- Panel: click a thread (or the fresh-session row) to open its report in place: fingerprint, probe facts, earlier
+  probes, evidence with what was reverted; right-click for Probe, Copy report, Reveal folder. Fresh session sits
+  below the threads, the face is larger, the panel a little narrower. The Report window is gone (the report lives
+  in the rows; `nerfed report` remains).
+- Probes: a Suspicious first round no longer triggers a second one by default (`confirm_uncertain` is opt in), so a
+  probe costs three answers.
+- Scanner: Codex's usage-limit snapshot in the rollout is not read as a serving signal (it is the last limit family
+  Codex parsed from the headers, not the bucket the turn was charged to); the "at the usage limit" label only uses
+  the default family.
+
 ## 0.4.0 — 2026-09-15
 
 First public release.
