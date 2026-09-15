@@ -200,14 +200,21 @@ def pid_alive(pid) -> bool:
 # ----------------------------------------------------------------------------------------- config
 
 
+# Values an older version wrote into config.json as part of a full defaults dump; nobody chooses these on purpose,
+# so a saved copy equal to one of them is treated as "not set" and the current default applies.
+OLD_DEFAULTS = {"probe_timeout_s": 180, "confirm_uncertain": True}
+
+
 def load_config() -> dict:
     cfg = dict(DEFAULT_CONFIG)
-    cfg.update(read_json(CONFIG_PATH, {}) or {})
+    saved = read_json(CONFIG_PATH, {}) or {}
+    cfg.update({k: v for k, v in saved.items() if not (k in OLD_DEFAULTS and v == OLD_DEFAULTS[k])})
     return cfg
 
 
 def save_config(cfg: dict) -> None:
-    write_json(CONFIG_PATH, cfg)
+    """Only what differs from the defaults is written, so the defaults can change with the code."""
+    write_json(CONFIG_PATH, {k: v for k, v in cfg.items() if k not in DEFAULT_CONFIG or v != DEFAULT_CONFIG[k]})
 
 
 def parse_frequency(s) -> tuple[str, int]:

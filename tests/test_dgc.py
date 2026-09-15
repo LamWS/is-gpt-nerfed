@@ -659,6 +659,18 @@ class SnapshotReportTests(unittest.TestCase):
         self.assertEqual(rec["verdict"], "MATCH")
         dgc.save_config({**dgc.load_config(), "probe_timeout_s": 30})
 
+    def test_config_file_keeps_only_choices_not_frozen_defaults(self):
+        before = dgc.load_config()
+        dgc.save_config({**dgc.DEFAULT_CONFIG, "frequency": "15m", "codex_bin": FAKE_CODEX})
+        on_disk = dgc.read_json(dgc.CONFIG_PATH)
+        self.assertEqual(set(on_disk), {"frequency", "codex_bin"}, on_disk)
+        dgc.write_json(dgc.CONFIG_PATH, {"probe_timeout_s": 180, "confirm_uncertain": True, "frequency": "15m", "codex_bin": FAKE_CODEX})
+        cfg = dgc.load_config()
+        self.assertEqual(cfg["probe_timeout_s"], dgc.DEFAULT_CONFIG["probe_timeout_s"], "an old default dump does not freeze the timeout")
+        self.assertFalse(cfg["confirm_uncertain"])
+        self.assertEqual(cfg["frequency"], "15m", "a real choice survives")
+        dgc.save_config(before)
+
     def test_a_mismatch_needs_two_answers(self):
         results = [{"model": "gpt-5.6-luna", "probability": 0.99, "score": 2.0}, {"model": "gpt-6-astra", "probability": 0.01, "score": 0.0}]
         self.assertEqual(dgc.assess("gpt-6-astra", {"results": results, "used_outputs": 1}, [])["verdict"], "SUSPICIOUS")
