@@ -32,8 +32,8 @@ NERFED_DEMO=1 ~/Applications/IsGPTNerfed.app/Contents/MacOS/IsGPTNerfed --render
   call the Codex TUI's `/hooks` screen makes (`nerfed hooks status` / `nerfed hooks trust`). The hash covers the hook
   command, so changing a command needs re-trusting; `install.sh` does that.
 - A non-zero exit from a hook (argparse's exit 2 included) makes Codex block the user's turn. The hook entry point
-  therefore never exits non-zero, and the shell wrapper exits 0 when `python3` or the script is missing.
-  `~/.codex/is-gpt-nerfed/errors.log` is where a crashed hook leaves its trace.
+  therefore never exits non-zero, and the shell wrapper exits 0 when `python3` or the script is missing. A hook that
+  crashes is recorded in `~/.codex/is-gpt-nerfed/errors.log` and nowhere else.
 
 ## Probes
 
@@ -65,17 +65,19 @@ Reads the session's rollout JSONL incrementally on every Stop hook.
 | `service_tier_change` | info | priority tier dropped |
 
 Only the latest change per dimension (model, effort, context window, tier) is active; a reverted change stays in the
-log and the report. Better or worse (`compare_models`) is not a list of names. In order of trust: the catalog's
-successor pointer (`upgrade` in `models_cache.json`), hidden internal models, the generation in the slug (gpt-5.6 →
-gpt-6, claude-opus-4-7 → 4-8), the size tier in the slug (nano, mini/spark/lite/small/flash, plain, pro/ultra), then
-the catalog's ranking (`priority`), the highest supported reasoning effort and the context window. Each answer carries
-a confidence; only high or medium upgrades become good news.
+log and the report. `compare_models` decides whether a model switch is an upgrade or a downgrade from these signals,
+most trusted first: the catalog's successor pointer (`upgrade` in `models_cache.json`), hidden internal models, the
+generation in the slug (gpt-5.6 → gpt-6, claude-opus-4-7 → 4-8), the size tier in the slug (nano,
+mini/spark/lite/small/flash, plain, pro/ultra), the catalog's ranking (`priority`), the highest supported reasoning
+effort, and the context window. Each answer carries a confidence, and only upgrades with high or medium confidence
+are reported.
 
 `token_count.rate_limits` is not the bucket a turn was charged to and says nothing about the model that answered:
 Codex parses one snapshot per limit family from the response headers in alphabetical order (`codex`, then e.g.
-`codex_bengalfox`, the GPT-5.3-Codex-Spark allowance) and persists the last one. The server's `x-codex-active-limit`
-header is the real bucket, and no header names the serving model, so the fingerprint stays the only measurement. The
-scanner reads `rate_limits` only for the "at the usage limit" label, and only from the unnamed default family.
+`codex_bengalfox`, the GPT-5.3-Codex-Spark allowance) and persists the last one. The bucket a turn was charged to is
+in the server's `x-codex-active-limit` header, and no header names the model that answered, so the fingerprint is the
+only measurement of that. The scanner reads `rate_limits` only for the "at the usage limit" label, and only from the
+unnamed default family.
 
 ## Ledger (`~/.codex/is-gpt-nerfed/`)
 
@@ -118,7 +120,8 @@ The app also logs to the unified log (Console.app, subsystem `is-gpt-nerfed`).
 gh release create v<version> dist/IsGPTNerfed-<version>.* --title <version>
 ```
 
-Tag `vX.Y.Z`, not a pre-release: `releases/latest` is what the app and `install-app.sh` read. The app checks every
+The tag must be `vX.Y.Z` and the release must not be marked pre-release, because the app and `install-app.sh` read
+`releases/latest`. The app checks every
 10 minutes (`nerfed update-check`, state in `update.json`) and shows "vX.Y.Z is out · update" in the footer, one
 notification per version. Clicking it runs `nerfed update-install` detached: download the zip, verify its sha256, stop
 the app, move the old bundle to the Trash, put the new one in place, strip quarantine, relaunch. A failed check is
@@ -127,9 +130,9 @@ silent; a failed install shows "Update failed · retry". Codex also accepts the 
 
 ### Signing and notarization
 
-Not done yet (needs an Apple Developer Program membership; an individual's certificate carries their legal name). Until
-then the app is ad-hoc signed: `install-app.sh` and the self-updater avoid the Gatekeeper block, a browser download
-needs System Settings → Privacy & Security → Open Anyway. When a Developer ID exists:
+Not done yet. It needs an Apple Developer Program membership, and an individual's certificate carries their legal
+name. Until then the app is ad-hoc signed; `install-app.sh` and the self-updater avoid the Gatekeeper block, and a
+browser download needs System Settings → Privacy & Security → Open Anyway. With a Developer ID:
 
 1. Xcode → Settings → Accounts → Manage Certificates → + → **Developer ID Application**;
    `security find-identity -v -p codesigning` then lists it.
@@ -140,7 +143,8 @@ needs System Settings → Privacy & Security → Open Anyway. When a Developer I
 
 ## Limits and contributions
 
-Windows and Linux are untested (the Python is portable; notifications and the app are macOS-only). Codex's app-server
-protocol is marked experimental; `nerfed doctor --fork` proves the fork path against the installed Codex with zero
-inference. Welcome: detection signals, bank updates from upstream ModelTrace (keep `provenance.json` honest),
-Windows/Linux. Keep the panel to its type scale (17 / 13 / 11) and no icons.
+Windows and Linux are untested. The Python is portable, but notifications and the app are macOS-only. Codex's
+app-server protocol is marked experimental; `nerfed doctor --fork` checks the fork path against the installed Codex
+without running inference. Contributions that would help most: new detection signals, bank updates from upstream
+ModelTrace (keep `provenance.json` accurate), and Windows or Linux support. Keep the panel to its type scale (17 / 13 /
+11) and without icons.
