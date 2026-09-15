@@ -260,12 +260,30 @@ def fork_ephemeral(app: AppServer, thread: dict, turn_id: str) -> dict:
 # -- probe runner -------------------------------------------------------------------------------
 
 
+def rate_limit_summary(rl: dict) -> dict:
+    """The usage snapshot Codex last reported (`account/rateLimits/updated`), kept for the record. Informational only:
+    Codex parses one snapshot per limit family from the response headers and reports each in turn, so this is not
+    necessarily the bucket the request was charged to, and it never identifies the model that answered.
+    Accepts camelCase or snake_case."""
+    if not isinstance(rl, dict):
+        return {}
+    def g(d, *names):
+        for n in names:
+            if isinstance(d, dict) and d.get(n) is not None:
+                return d[n]
+        return None
+    primary = g(rl, "primary") or {}
+    return {"limit_id": g(rl, "limitId", "limit_id"), "limit_name": g(rl, "limitName", "limit_name"),
+            "used_percent": g(primary, "usedPercent", "used_percent"), "window_minutes": g(primary, "windowMinutes", "window_minutes")}
+
+
 def run_turns(app: AppServer, forks: list[dict], deadline: float, parallel: bool = True) -> None:
     """Start one text-only turn per fork and collect the final agent message. Mutates each fork dict:
-    text, error, usage, turn_id, elapsed_s."""
+    text, error, usage, rate_limits, turn_id, elapsed_s."""
     states = {f["id"]: f for f in forks}
+    app.last_rate_limits = getattr(app, "last_rate_limits", None)
     for f in forks:
-        f.update({"text": None, "other": [], "done": False, "error": None, "usage": None, "turn_id": None, "started_at": None})
+        f.update({"text": None, "other": [], "done": False, "error": None, "usage": None, "rate_limits": None, "turn_id": None, "started_at": None})
 
     def start(f: dict) -> None:
         f["started_at"] = time.time()
@@ -290,6 +308,12 @@ def run_turns(app: AppServer, forks: list[dict], deadline: float, parallel: bool
 
     def handle(message: dict) -> None:
         method, params = message.get("method"), message.get("params") or {}
+        if method == "account/rateLimits/updated":  # account-level usage snapshot, recorded with the probe
+            app.last_rate_limits = rate_limit_summary(params.get("rateLimits") or params)
+            for g in forks:
+                if not g["done"]:
+                    g["rate_limits"] = app.last_rate_limits
+            return
         f = states.get(params.get("threadId"))
         if not f or f["done"]:
             return
@@ -377,7 +401,7 @@ def probe_thread(codex_bin: str, thread_id: str, queries: int = 3, languages=("z
                    "name": thread.get("name"), "last_turn": turn["id"], "last_turn_status": turn.get("status")},
         "forks": [{k: v for k, v in f.items() if k != "prompt"} for f in forks],
         "elapsed_s": round(time.time() - t0, 1), "parallel": parallel,
-        "server_requests": len(app.server_requests),
+        "server_requests": len(app.server_requests), "rate_limits": getattr(app, "last_rate_limits", None),
     }
 
 
@@ -452,6 +476,7 @@ def probe_fresh(codex_bin: str, model: str, effort: str | None = None, provider:
                    "cwd": cwd, "path": None, "name": "fresh session", "last_turn": None},
         "forks": [{k: v for k, v in f.items() if k != "prompt"} for f in forks],
         "elapsed_s": round(time.time() - t0, 1), "parallel": parallel, "server_requests": len(app.server_requests),
+        "rate_limits": getattr(app, "last_rate_limits", None),
     }
 
 

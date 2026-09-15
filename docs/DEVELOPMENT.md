@@ -62,6 +62,12 @@ Reads the thread's rollout JSONL incrementally on every Stop hook. Findings and 
 | `applied_model_change` | soft | a lower-tier model was applied through thread settings ([openai/codex#28211](https://github.com/openai/codex/issues/28211)) |
 | `service_tier_change` | info | priority tier dropped |
 
+### What the rollout's `rate_limits` field is, and is not
+
+`token_count.rate_limits` is not the bucket the turn was charged to. Codex parses one snapshot per limit family from the response headers (`x-codex-primary-*` → `codex`, then every `x-codex-<id>-*` family in alphabetical order, e.g. `x-codex-bengalfox-*` → `codex_bengalfox`, limit name "GPT-5.3-Codex-Spark"), records each in turn and emits a single `token_count` afterwards, so the persisted snapshot is simply the last family in that order (`codex-rs/codex-api/src/sse/responses.rs`, `core/src/session/turn.rs`, `core/src/state/session.rs`). On plans with a separate Spark allowance every turn therefore shows the Spark bucket at 0%, whatever model answered. The server's own `x-codex-active-limit` header (in `logs_2.sqlite`, DEBUG lines "Request completed … headers=") said `premium` on every desktop request inspected. Consequences: the scanner never treats a bucket as a serving signal, and the "at the usage limit" label only uses snapshots of the unnamed default family.
+
+The only server-side statement of the serving model is the `openai-model` response header (`ResponseEvent::ServerModel`, behind Codex's own server-model-mismatch warning and the app-server `model/rerouted` notification). The desktop responses inspected did not carry it, so the fingerprint probe remains the measurement.
+
 ## Ledger (`~/.codex/is-gpt-nerfed/`)
 
 | file | |

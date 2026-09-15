@@ -566,9 +566,13 @@ def scan_rollout(path: str, scan: dict, hidden=frozenset(), cap_bytes: int = 64 
                         add("service_tier_change", "info", f"service tier {scan['tier']} → {tier}", ts)
                         scan["tier"] = tier
             elif et == "token_count":
+                # rate_limits is whichever limit family Codex parsed *last* from the response headers (families are
+                # emitted in alphabetical order, so on plans with a separate GPT-5.3-Codex-Spark allowance it is that
+                # bucket at 0% on every turn). It never identifies the model that answered, and a named bucket says
+                # nothing about the real usage: only the unnamed default family feeds the "at the usage limit" label.
                 rl = p.get("rate_limits") or {}
                 pct = (rl.get("primary") or {}).get("used_percent")
-                if isinstance(pct, (int, float)):
+                if isinstance(pct, (int, float)) and not rl.get("limit_name"):
                     scan["usage_percent"] = pct
                 ctx = (p.get("info") or {}).get("model_context_window")
                 if isinstance(ctx, int) and ctx > 0:
@@ -1086,7 +1090,7 @@ def fork_summary(f: dict) -> dict:
     text = f.get("text") or ""
     return {"id": f.get("id"), "model": f.get("model"), "effort": f.get("effort"), "tier": f.get("service_tier"),
             "language": f.get("language"), "count": f.get("count"), "chars": len(text), "error": (f.get("error") or None),
-            "elapsed_s": f.get("elapsed_s"), "usage": f.get("usage")}
+            "elapsed_s": f.get("elapsed_s"), "usage": f.get("usage"), "rate_limits": f.get("rate_limits")}
 
 
 def probe_round(runner, rec: dict) -> tuple[list[dict], list[str], dict | None]:
@@ -1112,9 +1116,10 @@ def probe_round(runner, rec: dict) -> tuple[list[dict], list[str], dict | None]:
             return [], [f"unexpected error: {e!r}"], None
         outputs = [{"text": f["text"], "expected_count": f["count"]} for f in out["forks"] if f.get("text") and not f.get("error")]
         errors = [f["error"] for f in out["forks"] if f.get("error")]
+        rec["rate_limits"] = out.get("rate_limits")
         log_event("probe_round", probe=rec["id"], sid=rec.get("thread_id"), attempt=attempt, answers=len(outputs),
                   fork_errors=len(errors), elapsed_s=out.get("elapsed_s"), last_turn=(out.get("thread") or {}).get("last_turn"),
-                  last_turn_status=(out.get("thread") or {}).get("last_turn_status"),
+                  last_turn_status=(out.get("thread") or {}).get("last_turn_status"), rate_limits=out.get("rate_limits"),
                   forks=[fork_summary(f) for f in out.get("forks") or []])
         if not outputs and attempt < 2 and errors and transport_like(errors):
             rec["retries"] = int(rec.get("retries") or 0) + 1
