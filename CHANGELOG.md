@@ -7,6 +7,8 @@
   else moves. Right-click for Probe, Copy report, Reveal folder. Settings is a page of its own. Fresh session sits
   below the threads; the header is the chip face with one short line per fact; the panel is a little narrower.
   The Report window is gone (the report lives in the rows; `nerfed report` remains).
+- The headline is "All clear" unless something is downgraded or suspicious; an unverified count (a verdict from
+  another account, or from before accounts were tracked) follows on the next line instead of being the headline.
 - Fixed: the SessionStart hook crashed (silently, in the fail-safe) on a keyword collision, so session starts were
   not logged.
 - A failed attempt (Invalid) is no longer shown as a verdict: the row keeps its last verdict and offers Retry; the

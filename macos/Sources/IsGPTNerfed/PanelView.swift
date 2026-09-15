@@ -58,23 +58,6 @@ private func petFace(alert: Bool, warn: Bool, running: Bool) -> String {
     return "(•ᴗ•)"
 }
 
-private func parseISO(_ s: String) -> Date? {
-    let f = ISO8601DateFormatter()
-    f.formatOptions = [.withInternetDateTime]
-    return f.date(from: s) ?? { f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]; return f.date(from: s) }()
-}
-
-/// "today 17:50" or "Sep 14, 17:50", in the Mac's time zone.
-private func when(_ d: Date) -> String {
-    let f = DateFormatter()
-    if Calendar.current.isDateInToday(d) {
-        f.dateFormat = "HH:mm"
-        return "today " + f.string(from: d)
-    }
-    f.dateFormat = "MMM d, HH:mm"
-    return f.string(from: d)
-}
-
 /// The chip face that matches the app icon (bundled as face-ok / face-warn / face-alert.png); text fallback.
 struct FaceView: View {
     let alert: Bool
@@ -412,7 +395,7 @@ struct SwapLines<Summary: View, Report: View>: View {
     }
 }
 
-/// The report: last verdict, fingerprint, probe facts, earlier probes, evidence with what was reverted. Text only.
+/// The report: last verdict, fingerprint, earlier probes, evidence with what was reverted. Text only.
 struct ReportLines: View {
     @Environment(Store.self) private var store
     let probes: [ProbeSummary]
@@ -431,7 +414,6 @@ struct ReportLines: View {
                 if let r = p.results, !r.isEmpty, !p.isFailure, p.staleAccount != true {
                     fact("Fingerprint", r.map { "\($0.model ?? "?") \(ProbeSummary.pct($0.probability))" }.joined(separator: " · "))
                 }
-                fact("Probe", facts(p))
                 ForEach(Array((p.errors ?? []).enumerated()), id: \.offset) { _, e in
                     fact("Problem", e, tint: .orange)
                 }
@@ -479,16 +461,6 @@ struct ReportLines: View {
         }
     }
 
-    /// "a1b2c3d4e5 · ephemeral forks · 3 of 3 answers · 41 s · today 17:50"
-    private func facts(_ p: ProbeSummary) -> String {
-        var parts = [p.id]
-        if let m = p.mode { parts.append(m == "fresh" ? "fresh session" : "ephemeral forks") }
-        if let n = p.usedOutputs, let q = p.queries, q > 0 { parts.append("\(n) of \(q) answers") }
-        if let r = p.rounds, r > 1 { parts.append("\(r) rounds") }
-        if let s = p.elapsedS { parts.append("\(Int(s.rounded())) s") }
-        if let f = p.finished, let d = parseISO(f) { parts.append(when(d)) }
-        return parts.joined(separator: " · ")
-    }
 }
 
 /// The finding with its time when that fits on one line; without the time otherwise (a lone "9m ago" on a second

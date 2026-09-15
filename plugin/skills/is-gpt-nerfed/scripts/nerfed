@@ -1974,16 +1974,18 @@ def build_snapshot(cfg: dict, hours: float = 48.0) -> dict:
     unverified += 1 if global_stale else 0
     running += 1 if fr else 0
     default_model, default_effort = default_model_settings()
-    parts = []
+    parts = []  # the first part is the panel's headline: a problem if there is one, otherwise "all clear"
     if downgraded:
         parts.append("fresh session downgraded" if global_alert and downgraded == 1 else f"{downgraded} downgraded")
     if suspicious:
         parts.append(f"{suspicious} suspicious")
-    if unverified:
+    if not parts:
+        parts.append("all clear" if (out_threads or global_probe) else "no active threads")
+    if unverified:  # a verdict from another account (or from before accounts were tracked): not a problem, just not current
         parts.append(f"{unverified} unverified")
     if running:
         parts.append(f"{running} probe{'s' if running > 1 else ''} running")
-    message = " · ".join(parts) if parts else ("all clear" if (out_threads or global_probe) else "no active threads")
+    message = " · ".join(parts)
     status = "alert" if downgraded else ("warn" if suspicious else ("unverified" if unverified else "ok"))
     for t in out_threads:  # surface the worker's progress note (e.g. waiting for a live turn to finish)
         t["probe_note"] = t.pop("_probe_note", None)
