@@ -28,8 +28,8 @@ model such as `gpt-reserve`, a smaller context window. A move to a newer or larg
 a rollout can go either way. This costs no tokens.
 
 On a schedule, the plugin also forks your session three times, ephemerally, through the same app-server call the
-desktop uses for its side chats, but with the session's own model and reasoning effort (the desktop's side chats
-run on a lighter model). Each fork is asked for about 300 "random" numbers. A language model picks random numbers with a bias that is characteristic of the
+desktop uses for a side chat, with the session's own model and reasoning effort. Each fork is asked for about 300
+"random" numbers. A language model picks random numbers with a bias that is characteristic of the
 model. [ModelTrace](https://github.com/xqy2006/ModelTrace)'s calibrated bank turns the three answers into a
 fingerprint (100 % accuracy with three answers in cross-validation), and the verdict compares that fingerprint with
 the model you selected:

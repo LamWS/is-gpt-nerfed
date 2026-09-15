@@ -49,10 +49,12 @@ NERFED_DEMO=1 ~/Applications/IsGPTNerfed.app/Contents/MacOS/IsGPTNerfed --render
   ≥ 0.5σ (ModelTrace's calibrated softmax amplifies small gaps) and at least two answers (one answer is calibrated
   at 95.5 %).
 - Fresh-session probe: `thread/start` with `ephemeral: true`, no history.
-- The desktop's own `/side` is a `thread/fork` too, but its side chats run on a lighter model (three real ones on this
-  Mac ran gpt-5.6-terra under gpt-6-astra parents). The probe forks with the parent's model and effort on purpose, so
-  a side chat is not a substitute for a probe, and the probe's request is not byte-identical to a side chat's: the
-  desktop's fork parameters are not logged, and Codex never logs request bodies.
+- The desktop's `/side` is a `thread/fork` too, with whatever model its picker is set to; the probe forks with the
+  parent's model and effort. Whether the two requests are byte-identical cannot be checked: the desktop's fork
+  parameters are not logged, and Codex never logs request bodies.
+- The desktop also starts ephemeral helper threads of its own (its suggestions generator: "Generate 0 to 3
+  hyperpersonalized suggestions…") on gpt-5.6-terra. They fire the hooks like any session; the ledger files them
+  as `side` because they have no rollout, and the panel never lists them. They are not side chats.
 - Every request Codex makes carries an originator (the desktop app: `Codex Desktop`; the CLI: `codex_cli_rs`); a
   session started through the app-server would carry the client's `clientInfo` name instead. The probe process sets
   `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` to the probed session's originator (or the binary's owner for fresh probes),
