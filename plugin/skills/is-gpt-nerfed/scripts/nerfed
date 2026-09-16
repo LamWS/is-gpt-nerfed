@@ -2796,11 +2796,14 @@ def cmd_setup(args) -> int:
                         print(f"  kept previous version path {v} → {VERSION} for the running Codex app")
                     except OSError as e:
                         print(f"  could not link {v}: {e}")
-            stable = os.path.join(NERFED_HOME, "plugin")  # fallback the hook command uses when PLUGIN_ROOT is stale
+            # Fallback the hook command uses when PLUGIN_ROOT is stale. It points at the marketplace source (the
+            # checkout or the app bundle), which survives version bumps; Codex deletes old cache directories.
+            stable = os.path.join(NERFED_HOME, "plugin")
+            source = current if "/plugins/cache/" in PLUGIN_ROOT else PLUGIN_ROOT
             try:
                 if os.path.islink(stable) or os.path.exists(stable):
                     os.remove(stable) if os.path.islink(stable) else shutil.rmtree(stable)
-                os.symlink(current, stable)
+                os.symlink(source, stable)
             except OSError as e:
                 print(f"  could not update {stable}: {e}")
     if not ok_cli:
