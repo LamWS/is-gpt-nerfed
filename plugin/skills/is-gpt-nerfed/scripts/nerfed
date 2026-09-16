@@ -39,7 +39,7 @@ sys.path.insert(0, HERE)
 import codex_appserver as cas  # noqa: E402
 import modeltrace_core as core  # noqa: E402
 
-VERSION = "0.4.3"
+VERSION = "0.4.4"
 DGC_BIN = os.path.abspath(__file__)
 SKILL_DIR = os.path.dirname(HERE)
 PLUGIN_ROOT = os.environ.get("PLUGIN_ROOT") or os.environ.get("CLAUDE_PLUGIN_ROOT") or os.path.dirname(os.path.dirname(SKILL_DIR))
@@ -1120,7 +1120,7 @@ def finalize_probe(rec: dict, outputs: list[dict], expected: str | None, errors:
             if cfg.get("halt_on_mismatch") and verdict in ("MISMATCH", "DOWNGRADED!"):
                 st["halt"] = {"id": rec["id"], "ts": iso(), "detail": quote}
                 log_event("halt_set", level="warn", sid=tid, probe=rec["id"], verdict=verdict)
-    if verdict in ("MISMATCH", "DOWNGRADED!", "SUSPICIOUS", "INVALID", "UNLISTED") or (verdict == "MATCH" and cfg.get("notify_on_ok")):
+    if verdict in ("MISMATCH", "DOWNGRADED!", "SUSPICIOUS", "UNLISTED") or (verdict == "MATCH" and cfg.get("notify_on_ok")):  # a failed attempt is logged, not announced
         notify(cfg, quote, subtitle=f"verdict: {verdict}")
     if verdict == "DOWNGRADED!" or (verdict == "MISMATCH" and direction == "downgrade"):
         play_sound(cfg)
@@ -1216,7 +1216,7 @@ def probe_round(runner, rec: dict) -> tuple[list[dict], list[str], dict | None]:
             if attempt < 2 and transport_like([str(e)]):
                 rec["retries"] = int(rec.get("retries") or 0) + 1
                 log_event("probe_retry", level="warn", probe=rec["id"], sid=rec.get("thread_id"), attempt=attempt, error=str(e)[:300])
-                time.sleep(3)
+                time.sleep(8)
                 continue
             log_event("probe_transport_error", level="error", probe=rec["id"], sid=rec.get("thread_id"), error=str(e)[:300])
             return [], [str(e)], None
@@ -1233,7 +1233,7 @@ def probe_round(runner, rec: dict) -> tuple[list[dict], list[str], dict | None]:
         if not outputs and attempt < 2 and errors and transport_like(errors):
             rec["retries"] = int(rec.get("retries") or 0) + 1
             log_event("probe_retry", level="warn", probe=rec["id"], sid=rec.get("thread_id"), attempt=attempt, error=errors[0][:300])
-            time.sleep(3)
+            time.sleep(8)
             continue
         return outputs, errors, out
 
@@ -1330,7 +1330,8 @@ def run_fresh_probe(cfg: dict, model: str | None = None, effort: str | None = No
 
 
 TRANSPORT_PATTERNS = ("stayed busy", "in-progress turn", "timed out", "exited", "transport", "app-server", "deadline", "inference failed", "connection",
-                      "network", "unexpected error", "no usable answer")
+                      "network", "unexpected error", "no usable answer",
+                      "thread-store", "behind durable rollout", "projection")  # Codex's store lagging its rollout: transient
 
 
 def transport_like(errors: list[str]) -> bool:

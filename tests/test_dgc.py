@@ -671,6 +671,17 @@ class SnapshotReportTests(unittest.TestCase):
         self.assertEqual(cfg["frequency"], "15m", "a real choice survives")
         dgc.save_config(before)
 
+    def test_a_transient_store_error_is_retried(self):
+        self.assertTrue(dgc.transport_like(["codex thread/fork: failed to prepare paginated fork: thread-store internal error: thread history projection for x is behind durable rollout"]))
+        marker = os.path.join(TMP, "fork-error-once"); open(marker, "w").close()
+        with mock.patch.object(dgc, "link_session", side_effect=lambda st: st.update(kind="main")):
+            run_hook({"session_id": "store-lag-1", "cwd": TMP, "model": "gpt-6-astra", "hook_event_name": "UserPromptSubmit", "prompt": "hi"})
+        code, out = run_cli(["probe", "now", "--mode", "fork", "--thread", "store-lag-1"], {"FAKE_CODEX_MODEL": "gpt-6-astra", "FAKE_CODEX_FORK_ERROR_ONCE": marker})
+        self.assertEqual(code, 0, out)
+        rec = dgc.read_json(dgc.probe_path([r for r in dgc.iter_jsonl(dgc.PROBES_INDEX) if r.get("thread_id") == "store-lag-1"][-1]["id"]))
+        self.assertEqual(rec["retries"], 1, "one retry after Codex's store lagged its rollout")
+        self.assertEqual(rec["verdict"], "MATCH")
+
     def test_a_mismatch_needs_two_answers(self):
         results = [{"model": "gpt-5.6-luna", "probability": 0.99, "score": 2.0}, {"model": "gpt-6-astra", "probability": 0.01, "score": 0.0}]
         self.assertEqual(dgc.assess("gpt-6-astra", {"results": results, "used_outputs": 1}, [])["verdict"], "SUSPICIOUS")

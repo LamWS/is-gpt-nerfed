@@ -102,6 +102,11 @@ def main():
         elif method == "thread/turns/list":
             send({"id": rid, "result": {"data": turns(), "nextCursor": None}})
         elif method == "thread/fork":
+            once = os.environ.get("FAKE_CODEX_FORK_ERROR_ONCE")  # marker file: the next fork fails with a transient store error, once
+            if once and os.path.exists(once):
+                os.remove(once)
+                send({"id": rid, "error": {"code": -32000, "message": "failed to prepare paginated fork: thread-store internal error: thread history projection for x is behind durable rollout"}})
+                continue
             last = params.get("lastTurnId")
             if (os.environ.get("FAKE_CODEX_BUSY_MODE") == "fallback" and last == "turn-live") or \
                     (os.environ.get("FAKE_CODEX_BUSY_MODE") == "wait" and busy_now()):

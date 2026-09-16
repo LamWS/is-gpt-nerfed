@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.4 — 2026-09-16
+
+- A failed attempt no longer sends a notification; it is logged and the row offers Retry. Codex's transient
+  "thread history projection is behind durable rollout" store error counts as transient: one retry after a pause.
+- config.json keeps only the settings you changed, so new defaults apply after an update.
+
 ## 0.4.3 — 2026-09-16
 
 - A fork that has not answered within the deadline (now 300 s) is replaced once, so a slow model does not drop out of
