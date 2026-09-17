@@ -11,8 +11,8 @@
 </p>
 
 <p align="center">
-  <img src="docs/中文面板.png" width="48%" align="top" alt="菜单栏面板：状态、近期会话及检测结果、新会话检测">
-  <img src="docs/中文会话详情.png" width="48%" align="top" alt="展开会话：模型指纹、历史检测和证据">
+  <img src="docs/panel-zh-CN.png" width="48%" align="top" alt="菜单栏面板：状态、近期会话及检测结果、新会话检测">
+  <img src="docs/panel-detail-zh-CN.png" width="48%" align="top" alt="展开会话：模型指纹、历史检测和证据">
   <br><sub>中文面板和展开后的会话详情，使用示例数据。示例标题也已翻译，真实会话的标题保持原样。</sub>
 </p>
 <p align="center">

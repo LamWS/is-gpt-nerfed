@@ -56,10 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 await store.refresh()
                 try? await Task.sleep(for: .milliseconds(250))
             }
-            let variants: [(String, Bool, String?)] = [
-                ("", false, nil), ("-detail", false, "payments"), ("-settings", true, nil),
-                ("-failure", false, "oauth"), ("-fresh", false, "fresh"),
-            ]
+            let variants: [(String, Bool, String?)] = [("", false, nil), ("-detail", false, "payments")]
             for (suffix, settings, open) in variants {
                 let renderer = ImageRenderer(content: PanelView(showSettings: settings, open: open).environment(store).environment(\.plainRendering, true)
                                                 .frame(width: 440).padding(8).background(Color(nsColor: .windowBackgroundColor)))
