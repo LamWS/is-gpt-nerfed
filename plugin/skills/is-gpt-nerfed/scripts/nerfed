@@ -3009,7 +3009,10 @@ def cmd_selftest(args) -> int:
     st = new_session("s1")
     st["kind"], st["turns"] = "main", 8
     expect(probe_due(st, {"frequency": "turns:8", "nudge_cooldown_turns": 4}), "probe due after N turns")
-    fake = {"prediction": "gpt-5.6-luna", "probability": 0.9, "used_outputs": 3, "results": [], "family_probabilities": [], "diagnostics": [], "calibration": {"queries": "3", "beta": 12, "cv_accuracy": 1.0}}
+    fake = {"prediction": "gpt-5.6-luna", "probability": 0.9, "used_outputs": 3,
+            "results": [{"model": "gpt-5.6-luna", "probability": 0.9, "score": 2.0}, {"model": "gpt-6-astra", "probability": 0.05, "score": 0.2},
+                        {"model": "gpt-5.5", "probability": 0.05, "score": 0.1}],
+            "family_probabilities": [], "diagnostics": [], "calibration": {"queries": "3", "beta": 12, "cv_accuracy": 1.0}}
     expect(fingerprint_verdict("gpt-6-astra", fake, []) == ("MISMATCH", "downgrade"), "expected ≠ fingerprint → MISMATCH downgrade")
     expect(fingerprint_verdict("gpt-5.6-luna", fake, []) == ("MATCH", None), "expected = fingerprint → MATCH")
     expect(fingerprint_verdict("gpt-7-nova", fake, []) == ("UNLISTED", None), "unknown expected model → UNLISTED")
