@@ -1,5 +1,7 @@
 <p align="center"><img src="docs/social-preview.png" width="880" alt="is-gpt-nerfed: shrinkflation detector for Codex"></p>
 
+English · [简体中文](README.zh-CN.md)
+
 You pick a model in Codex. This tells you whether that model is actually the one answering. If it isn't, you get this:
 
 <p align="center">
@@ -75,6 +77,10 @@ Requires a Codex with plugin hooks (desktop app or CLI; tested on 0.154) and the
 removes everything.
 
 ## Using it
+
+The macOS interface supports English and Simplified Chinese, following the system's preferred languages with
+English as the fallback. CLI output, notifications, copied reports and raw diagnostic evidence remain in English.
+The interface language does not change ModelTrace's calibrated probe prompts.
 
 Every session you work in is probed in the background after 30 minutes of activity. To probe a session right away,
 say `$is-gpt-nerfed` in it.

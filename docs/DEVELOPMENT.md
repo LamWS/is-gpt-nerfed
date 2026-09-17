@@ -21,6 +21,27 @@ python3 -m unittest discover -s tests -v
 NERFED_DEMO=1 ~/Applications/IsGPTNerfed.app/Contents/MacOS/IsGPTNerfed --render docs/panel.png   # README images
 ```
 
+## Localization
+
+The macOS presentation layer supports English and Simplified Chinese (`zh-Hans`), using localized
+`Localizable.strings` resources packaged by SwiftPM. English is the development language and fallback.
+The app follows the user's preferred languages; restart the app after changing the system or per-app language.
+
+Keep translations in the presentation layer. Do not translate JSON keys, verdict codes, model IDs, configuration
+values, or ModelTrace's calibrated probe prompts. Raw evidence, errors, copied reports, CLI output and plugin
+notifications retain their original language. Unknown backend messages must remain readable instead of disappearing
+or being assigned a different verdict.
+
+When adding a language, add a matching `.lproj/Localizable.strings` resource with the same keys and compatible
+format placeholders, and list the locale in `CFBundleLocalizations` in `macos/Info.plist`.
+Test both SwiftPM execution and the assembled `.app`: the release bundle needs the SwiftPM
+resource bundle as well as the executable. Check the panel, expanded report and settings at their existing width
+and type scale, using synthetic data (`NERFED_DEMO=1`). Set `NERFED_HOME` to a temporary directory and `NERFED_BIN`
+to the checkout's CLI for these previews, because even `snapshot --demo` writes a ledger and CLI path hint.
+
+The English and [Simplified Chinese README](../README.zh-CN.md) should describe the same behavior; command names,
+configuration keys and URLs stay unchanged in translations.
+
 ## How Codex runs the plugin
 
 - `codex plugin add` copies the plugin to `~/.codex/plugins/cache/is-gpt-nerfed/is-gpt-nerfed/<version>/` and exports
