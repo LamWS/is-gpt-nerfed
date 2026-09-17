@@ -6,7 +6,7 @@ final class LocalizationTests: XCTestCase {
     func testChineseTranslationsAndFormatArguments() {
         XCTAssertEqual(L10n.tr("Match", language: "zh-Hans"), "匹配")
         XCTAssertEqual(L10n.tr("%@ of %@ answers", language: "zh-Hans", arguments: ["2", "3"]), "可用回答 2 / 3")
-        XCTAssertEqual(L10n.tr("declared %@", language: "zh-Hans", arguments: ["91%"]), "所选模型概率 91%")
+        XCTAssertEqual(L10n.tr("declared %@", language: "zh-Hans", arguments: ["91%"]), "所选模型 91%")
     }
 
     func testEnglishFallbackForUnsupportedLanguageAndUnknownKey() {
@@ -17,9 +17,9 @@ final class LocalizationTests: XCTestCase {
     func testDynamicStatusCountsAndUnknownStatusFallback() {
         XCTAssertEqual(
             L10n.statusMessage("2 downgraded · 1 suspicious · 3 probes running", language: "zh-Hans"),
-            "2 项降配 · 1 项可疑 · 3 个探测正在运行"
+            "2 个会话降配 · 1 个可疑 · 3 个正在检测"
         )
-        XCTAssertEqual(L10n.statusMessage("1 probe running", language: "zh-Hans"), "1 个探测正在运行")
+        XCTAssertEqual(L10n.statusMessage("1 probe running", language: "zh-Hans"), "1 个正在检测")
         XCTAssertEqual(L10n.statusMessage("all clear", language: "fr"), "All clear")
         XCTAssertEqual(L10n.statusMessage("2 downgraded · future state", language: "zh-Hans"), "2 downgraded · future state")
     }
