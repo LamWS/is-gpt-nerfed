@@ -24,16 +24,19 @@ NERFED_DEMO=1 ~/Applications/IsGPTNerfed.app/Contents/MacOS/IsGPTNerfed --render
 ## Localization
 
 The macOS presentation layer supports English and Simplified Chinese (`zh-Hans`), using localized
-`Localizable.strings` resources packaged by SwiftPM. English is the development language and fallback.
+`Localizable.strings` and `Backend.strings` resources packaged by SwiftPM. English is the development language and fallback.
 The app follows the user's preferred languages; restart the app after changing the system or per-app language.
 
 Keep translations in the presentation layer. Do not translate JSON keys, verdict codes, model IDs, configuration
-values, or ModelTrace's calibrated probe prompts. Raw evidence, errors, copied reports, CLI output and plugin
-notifications retain their original language. Unknown backend messages must remain readable instead of disappearing
-or being assigned a different verdict.
+values, or ModelTrace's calibrated probe prompts. Localize app-generated evidence, diagnostics and progress text
+at presentation time, retaining their original stored values. CLI output and plugin notifications are unchanged.
+Unknown external messages must remain readable instead of disappearing or being assigned a different verdict.
+Translate synthetic demo titles only when `snapshot.demo` is true; never translate a user's real session title.
 
-When adding a language, add a matching `.lproj/Localizable.strings` resource with the same keys and compatible
-format placeholders, and list the locale in `CFBundleLocalizations` in `macos/Info.plist`.
+When adding a language, add both matching string tables under its `.lproj` directory with the same keys and compatible
+format placeholders, and list the locale in `CFBundleLocalizations` in `macos/Info.plist`. Extend the backend template
+translator for that language; it currently preserves English and unsupported languages verbatim. Reasoning identifiers
+such as `high`, `xhigh` and `max` must remain unchanged in all languages.
 Test both SwiftPM execution and the assembled `.app`: the release bundle needs the SwiftPM
 resource bundle as well as the executable. Check the panel, expanded report and settings at their existing width
 and type scale, using synthetic data (`NERFED_DEMO=1`). Set `NERFED_HOME` to a temporary directory and `NERFED_BIN`

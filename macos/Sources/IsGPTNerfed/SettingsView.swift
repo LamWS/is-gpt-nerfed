@@ -83,12 +83,14 @@ struct SettingsView: View {
 
     @ViewBuilder
     private func picker(_ current: String, _ options: [(String, String)], key: String) -> some View {
+        let fallback = key == "frequency" || key == "fresh_frequency"
+            ? L10n.frequency(current, active: key == "frequency") : current
         if plain {
-            PlainValue(text: options.first(where: { $0.0 == current })?.1 ?? current)
+            PlainValue(text: options.first(where: { $0.0 == current })?.1 ?? fallback)
         } else {
             Picker("", selection: Binding(get: { current }, set: { v in Task { await store.setConfig(key, v) } })) {
                 ForEach(options, id: \.0) { Text($0.1).tag($0.0) }
-                if !options.contains(where: { $0.0 == current }) { Text(current).tag(current) }
+                if !options.contains(where: { $0.0 == current }) { Text(fallback).tag(current) }
             }
             .labelsHidden().controlSize(.small).frame(width: 170)
         }

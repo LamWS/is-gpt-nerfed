@@ -142,3 +142,18 @@
 "nerfed not found: the app bundle is incomplete. Rebuild with macos/build.sh or run ./install.sh from a checkout." = "nerfed not found: the app bundle is incomplete. Rebuild with macos/build.sh or run ./install.sh from a checkout.";
 "cannot start python3: %@" = "cannot start python3: %@";
 "dgc exited with %@" = "dgc exited with %@";
+
+/* Dynamic settings labels and app-owned session titles */
+"Every %@ turns" = "Every %@ turns";
+"Every %@ min of activity" = "Every %@ min of activity";
+"Every %@ hours of activity" = "Every %@ hours of activity";
+"Every %@ minutes" = "Every %@ minutes";
+"Every %@ hours" = "Every %@ hours";
+"Session %@" = "Session %@";
+"account hidden" = "account hidden";
+"Refactor payment webhooks" = "Refactor payment webhooks";
+"Investigate flaky CI on main" = "Investigate flaky CI on main";
+"Add OAuth device flow" = "Add OAuth device flow";
+"Rewrite the docs site" = "Rewrite the docs site";
+"Migrate to Postgres 17" = "Migrate to Postgres 17";
+"Write release notes v2.3" = "Write release notes v2.3";

@@ -36,7 +36,7 @@ extension ProbeSummary {
     var detail: String {
         var parts: [String] = []
         if isFailure {
-            parts.append(errors?.first ?? L10n.tr("no usable sample"))
+            parts.append(errors?.first.map { L10n.backend($0) } ?? L10n.tr("no usable sample"))
         } else if staleAccount == true {
             parts.append(prediction ?? "?")  // unverified for this account: the numbers would only lend false weight
         } else {
@@ -112,7 +112,9 @@ struct VerdictLine: View {
             }
         }
         .font(Type.text)
-        .help(probe.quote ?? "")
+        .help(probe.errors?.isEmpty == false
+              ? probe.errors!.map { L10n.backend($0) }.joined(separator: "\n")
+              : L10n.backend(probe.quote ?? ""))
     }
 }
 
@@ -198,7 +200,7 @@ struct PanelView: View {
     }
 
     private var statusWord: String {
-        if let err = store.lastError { return L10n.tr("nerfed error: %@", err) }
+        if let err = store.lastError { return L10n.tr("nerfed error: %@", L10n.backend(err)) }
         guard let s = store.snapshot else { return L10n.tr("Loading…") }
         return L10n.statusMessage(s.overall.message)
     }
@@ -207,7 +209,9 @@ struct PanelView: View {
     private var quietLines: [String] {
         guard let s = store.snapshot, store.lastError == nil else { return [] }
         var out: [String] = []
-        if let acct = s.account?.label, !acct.isEmpty { out.append(acct) }
+        if let acct = s.account?.label, !acct.isEmpty {
+            out.append(s.config.hideTitles == true ? L10n.tr(acct) : acct)
+        }
         if let (text, attention) = hooksLine, !attention { out.append(text) }
         if let ago = L10n.ago(s.account?.switchedAgo), !ago.isEmpty { out.append(L10n.tr("account switched %@", ago)) }
         return out
@@ -342,7 +346,11 @@ struct PanelView: View {
             }
             .contextMenu {
                 if !running { Button(failure?.retryable == true ? L10n.tr("Retry the probe") : L10n.tr("Probe now")) { store.probeFresh() } }
-                if let r = snap?.globalReportText { Button(L10n.tr("Copy report")) { store.copy(r) } }
+                if let r = snap?.globalReportText {
+                    Button(L10n.tr("Copy report")) {
+                        store.copy(L10n.report(r, title: "Fresh session", displayTitle: L10n.tr("Fresh session")))
+                    }
+                }
             }
         }
     }
@@ -359,7 +367,7 @@ struct PanelView: View {
                 let failed = (u.status ?? "").hasPrefix("failed")
                 if u.hasArchive == true {
                     TextButton(title: failed ? L10n.tr("Update failed · retry") : L10n.tr("v%@ is out · update", latest), color: .primary) { store.installUpdate() }
-                        .help(failed ? (u.status ?? "") : L10n.tr("Downloads v%@, replaces this app and relaunches it. The previous copy goes to the Trash.", latest))
+                        .help(failed ? L10n.backend(u.status ?? "") : L10n.tr("Downloads v%@, replaces this app and relaunches it. The previous copy goes to the Trash.", latest))
                 } else {  // a release without a zip: open the page
                     TextButton(title: L10n.tr("v%@ is out", latest), color: .primary) { store.openURL(u.url ?? "https://github.com/kiyoakii/is-gpt-nerfed/releases") }
                 }
@@ -429,7 +437,7 @@ struct ReportLines: View {
                     fact(L10n.tr("Fingerprint"), r.map { "\($0.model ?? "?") \(ProbeSummary.pct($0.probability))" }.joined(separator: " · "))
                 }
                 ForEach(Array((p.errors ?? []).enumerated()), id: \.offset) { _, e in
-                    fact(L10n.tr("Problem"), e, tint: .orange)
+                    fact(L10n.tr("Problem"), L10n.backend(e), tint: .orange)
                 }
                 if p.staleAccount == true {
                     fact(L10n.tr("Account"), p.accountState == "unknown"
@@ -471,7 +479,7 @@ struct ReportLines: View {
     private func failureDetail(_ failure: ProbeSummary) -> String {
         var attempt = L10n.tr("failed")
         if let ago = L10n.ago(failure.finishedAgo), !ago.isEmpty { attempt += " \(ago)" }
-        var details = [attempt, failure.errors?.first ?? L10n.tr("no usable answer")]
+        var details = [attempt, failure.errors?.first.map { L10n.backend($0) } ?? L10n.tr("no usable answer")]
         if let retries = failure.retries, retries > 0 {
             details.append(retries == 1 ? L10n.tr("retried once") : L10n.tr("retried %@×", String(retries)))
         }
@@ -490,7 +498,7 @@ struct EvidenceLine: View {
     var body: some View {
         ViewThatFits(in: .horizontal) {
             Text(L10n.evidenceText(text, ago: ago, active: true)).lineLimit(1).fixedSize(horizontal: true, vertical: false)
-            Text(text).lineLimit(2)
+            Text(L10n.backend(text)).lineLimit(2)
         }
         .font(Type.text).foregroundStyle(color)
     }
@@ -527,14 +535,16 @@ struct ThreadRow: View {
                 HStack(alignment: .top, spacing: 8) {
                     Circle().fill(dot).frame(width: 7, height: 7).padding(.top, 5)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(thread.title).font(Type.title).lineLimit(1)
+                        Text(L10n.sessionTitle(thread.title, isDemo: store.snapshot?.demo == true,
+                                               isHidden: store.snapshot?.config.hideTitles == true))
+                            .font(Type.title).lineLimit(1)
                         SwapLines(isOpen: isOpen) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(meta).font(Type.text).foregroundStyle(.secondary).lineLimit(1)
                                 if thread.probeRunning {
                                     HStack(spacing: 5) {
                                         ProgressView().controlSize(.mini)
-                                        let text = thread.probeNote.map { L10n.tr("Probing · %@…", L10n.tr($0)) }
+                                        let text = thread.probeNote.map { L10n.tr("Probing · %@…", L10n.backend($0)) }
                                             ?? L10n.tr("Probing, ephemeral forks in flight…")
                                         Text(text).font(Type.text).foregroundStyle(.secondary)
                                     }
@@ -566,7 +576,13 @@ struct ThreadRow: View {
             if !thread.probeRunning, !thread.halted {
                 Button(thread.lastFailure?.retryable == true ? L10n.tr("Retry the probe") : L10n.tr("Probe now")) { store.probe(thread) }
             }
-            if let r = thread.reportText { Button(L10n.tr("Copy report")) { store.copy(r) } }
+            if let r = thread.reportText {
+                Button(L10n.tr("Copy report")) {
+                    let title = L10n.sessionTitle(thread.title, isDemo: store.snapshot?.demo == true,
+                                                  isHidden: store.snapshot?.config.hideTitles == true)
+                    store.copy(L10n.report(r, title: thread.title, displayTitle: title))
+                }
+            }
             if let cwd = thread.cwd, !cwd.isEmpty, FileManager.default.fileExists(atPath: cwd) {
                 Button(L10n.tr("Open folder in Finder")) { store.reveal(cwd) }
             }

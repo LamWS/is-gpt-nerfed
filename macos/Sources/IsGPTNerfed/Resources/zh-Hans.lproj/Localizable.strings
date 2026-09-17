@@ -77,15 +77,15 @@
 "hooks alive %@" = "最近回调：%@";
 "just now" = "刚刚";
 "no hook events yet" = "尚未收到插件回调";
-"Hooks not trusted by Codex · run nerfed hooks trust" = "插件 Hook 尚未获准运行 · 请执行 nerfed hooks trust";
-"Codex does not list the plugin's hooks · run install.sh" = "Codex 中找不到插件 Hook · 请运行 install.sh";
+"Hooks not trusted by Codex · run nerfed hooks trust" = "插件回调尚未获准运行 · 请执行 nerfed hooks trust";
+"Codex does not list the plugin's hooks · run install.sh" = "Codex 中找不到插件回调 · 请运行 install.sh";
 "Codex has not loaded the plugin yet · quit and reopen Codex" = "插件尚未加载 · 请重启 Codex";
 "Codex still runs the previous version · quit and reopen Codex" = "插件仍是旧版本 · 请重启 Codex";
 "Codex is not installed on this Mac. Install the Codex app, then reopen this panel." = "这台 Mac 还没安装 Codex。安装后，请重新打开此面板。";
-"The plugin is not registered with Codex yet. Install adds the bundled plugin and records hook trust." = "插件还没安装到 Codex。点击“安装”即可添加内置插件，并允许它的 Hook 运行。";
-"Codex has not been told to trust the plugin's hooks, so nothing runs in your sessions yet." = "插件 Hook 还未获准运行，暂时无法检测会话。请先点击“信任 Hook”。";
+"The plugin is not registered with Codex yet. Install adds the bundled plugin and records hook trust." = "插件尚未注册到 Codex。安装会添加内置插件，并允许它的回调运行。";
+"Codex has not been told to trust the plugin's hooks, so nothing runs in your sessions yet." = "Codex 尚未允许插件的回调运行，因此暂时不会检测你的会话。请先点击“允许回调”。";
 "Install" = "安装";
-"Trust hooks" = "信任 Hook";
+"Trust hooks" = "允许回调";
 "Setup" = "安装与授权";
 "Active sessions" = "近期会话";
 "%@ in 48 h" = "近 48 小时 · %@ 个";
@@ -134,7 +134,7 @@
 "waiting for the current turn to finish" = "等待本轮对话结束";
 "Codex's own records show a switch to a better model (a rollout). Good news, still in effect. Click the row for the history." = "Codex 记录显示，会话已换用更好的模型，目前仍在使用。点击查看变更记录。";
 "Found in the session's own records, independent of any probe, and still in effect. Click the row for the history." = "这项变化直接来自会话记录，无需检测推断，目前仍然有效。点击查看变更记录。";
-"Applied through the session's settings and still in effect: either you changed it, or Codex did (it lowers effort automatically at usage limits). Click the row for the history." = "这项变化通过会话设置生效，目前仍未恢复。可能是你改的，也可能是 Codex 自动调整的；达到用量上限时，Codex 会自动降低推理强度。点击查看变更记录。";
+"Applied through the session's settings and still in effect: either you changed it, or Codex did (it lowers effort automatically at usage limits). Click the row for the history." = "这项变化通过会话设置生效，目前仍未恢复。可能是你改的，也可能是 Codex 自动调整的；达到用量上限时，Codex 会自动降低推理级别。点击查看变更记录。";
 "Clear the halt (work tools are denied in this session)" = "恢复会话中的工具调用";
 "Fork this session ephemerally (3 parallel forks) and fingerprint the answering model" = "创建当前会话的 3 个临时副本，同时检测它们实际使用的模型";
 "Open folder in Finder" = "在 Finder 中打开文件夹";
@@ -142,3 +142,18 @@
 "nerfed not found: the app bundle is incomplete. Rebuild with macos/build.sh or run ./install.sh from a checkout." = "未找到 nerfed：应用程序包不完整。请使用 macos/build.sh 重新构建，或在代码仓库中运行 ./install.sh。";
 "cannot start python3: %@" = "无法启动 python3：%@";
 "dgc exited with %@" = "dgc 已退出，退出码：%@";
+
+/* 动态设置标签和应用生成的会话标题 */
+"Every %@ turns" = "每 %@ 轮";
+"Every %@ min of activity" = "每使用 %@ 分钟";
+"Every %@ hours of activity" = "每使用 %@ 小时";
+"Every %@ minutes" = "每 %@ 分钟";
+"Every %@ hours" = "每 %@ 小时";
+"Session %@" = "会话 %@";
+"account hidden" = "账户已隐藏";
+"Refactor payment webhooks" = "重构支付回调";
+"Investigate flaky CI on main" = "排查主分支 CI 偶发失败";
+"Add OAuth device flow" = "添加 OAuth 设备授权";
+"Rewrite the docs site" = "重做文档站";
+"Migrate to Postgres 17" = "迁移到 Postgres 17";
+"Write release notes v2.3" = "编写 v2.3 更新说明";

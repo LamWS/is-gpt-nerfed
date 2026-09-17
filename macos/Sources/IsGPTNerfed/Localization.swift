@@ -1,6 +1,6 @@
 import Foundation
 
-/// App-owned interface copy. Keep backend evidence, error details, model names, and user content untouched.
+/// Interface copy, including the presentation of backend messages. Stored records and user content stay untouched.
 enum L10n {
     private static let englishBundle: Bundle = {
         guard let path = Bundle.module.path(forResource: "en", ofType: "lproj"),
@@ -88,9 +88,45 @@ enum L10n {
     }
 
     static func evidenceText(_ text: String, ago: String?, active: Bool, language: String? = nil) -> String {
-        var result = text
+        var result = backend(text, language: language)
         if let ago = localizedAgo(ago, language: language), !ago.isEmpty { result += " · \(ago)" }
         if !active { result += " · \(tr("reverted", language: language))" }
         return result
+    }
+
+    /// Translate only titles supplied by the app itself, never a user's real session title.
+    static func sessionTitle(_ title: String, isDemo: Bool, isHidden: Bool, language: String? = nil) -> String {
+        if isHidden, title.hasPrefix("Session "), Int(title.dropFirst(8)) != nil {
+            return tr("Session %@", language: language, arguments: [String(title.dropFirst(8))])
+        }
+        if isDemo { return tr(title, language: language) }
+        return title
+    }
+
+    static func frequency(_ value: String, active: Bool, language: String? = nil) -> String {
+        if value == "manual" { return tr("Manually", language: language) }
+        if value.hasPrefix("turns:"), let count = Int(value.dropFirst(6)), count > 0 {
+            return tr("Every %@ turns", language: language, arguments: [String(count)])
+        }
+        guard let unit = value.last, let count = Int(value.dropLast()), count > 0 else { return value }
+        switch unit {
+        case "m":
+            return tr(active ? "Every %@ min of activity" : "Every %@ minutes", language: language, arguments: [String(count)])
+        case "h":
+            if count == 1 { return tr(active ? "Every hour of activity" : "Every hour", language: language) }
+            return tr(active ? "Every %@ hours of activity" : "Every %@ hours", language: language, arguments: [String(count)])
+        default:
+            return value
+        }
+    }
+
+    /// Keep the report's user-supplied title separate from generated diagnostic prose.
+    static func report(_ text: String, title: String, displayTitle: String, language: String? = nil) -> String {
+        let lines = text.components(separatedBy: "\n")
+        let prefix = "is-gpt-nerfed · \(title) · "
+        guard let first = lines.first, first.hasPrefix(prefix) else { return text }
+        let header = "is-gpt-nerfed · \(displayTitle) · " + first.dropFirst(prefix.count)
+        guard lines.count > 1 else { return header }
+        return header + "\n" + backend(lines.dropFirst().joined(separator: "\n"), language: language)
     }
 }
