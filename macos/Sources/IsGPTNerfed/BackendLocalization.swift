@@ -528,12 +528,12 @@ extension L10n {
     }
 
     private static func backendResourceBundle(for language: String) -> Bundle? {
-        guard let path = Bundle.module.path(forResource: language, ofType: "lproj") else { return nil }
-        return Bundle(path: path)
+        resourceBundle(for: language)  // one case-insensitive lookup for both tables
     }
 
     private static func usesSimplifiedChinese(language: String?) -> Bool {
-        if let language { return language == "zh-Hans" }
-        return Bundle.module.preferredLocalizations.contains("zh-Hans")
+        // Localization identifiers come back lowercased from a SwiftPM resource bundle (zh-hans), so compare loosely.
+        if let language { return language.lowercased() == "zh-hans" }
+        return Bundle.module.preferredLocalizations.contains { $0.lowercased() == "zh-hans" }
     }
 }

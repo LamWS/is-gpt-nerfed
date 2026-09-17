@@ -18,8 +18,13 @@ enum L10n {
         return format(key, bundle: bundle, arguments: arguments)
     }
 
-    private static func resourceBundle(for language: String) -> Bundle? {
-        guard let path = Bundle.module.path(forResource: language, ofType: "lproj") else { return nil }
+    static func resourceBundle(for language: String) -> Bundle? {
+        // SwiftPM lowercases .lproj directory names in the built resource bundle (zh-Hans → zh-hans.lproj), and
+        // Bundle.path(forResource:ofType:) matches exactly, so look the directory up case-insensitively.
+        let wanted = language.lowercased()
+        let path = Bundle.module.paths(forResourcesOfType: "lproj", inDirectory: nil)
+            .first { ($0 as NSString).lastPathComponent.lowercased() == wanted + ".lproj" }
+        guard let path else { return nil }
         return Bundle(path: path)
     }
 
