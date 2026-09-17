@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.0 — 2026-09-18
+
+- The app speaks Simplified Chinese: the panel, settings, evidence lines, progress and error messages follow the
+  system's preferred languages, with English as the fallback. Model IDs, reasoning-effort values and your own session
+  titles stay as they are; stored records, CLI output and notifications are unchanged. A Chinese README
+  (README.zh-CN.md) came with it. Contributed by sudoHG (#1).
+- `nerfed selftest` crashed on its own synthetic analysis; an analysis without candidates is now Invalid instead of
+  an error.
+- The hooks' fallback path points at the plugin's source (the checkout or the app bundle) instead of a Codex cache
+  directory, so hooks keep working after a version bump makes Codex delete the old cache.
+
 ## 0.4.4 — 2026-09-16
 
 - A failed attempt no longer sends a notification; it is logged and the row offers Retry. Codex's transient
