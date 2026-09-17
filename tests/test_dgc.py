@@ -682,6 +682,10 @@ class SnapshotReportTests(unittest.TestCase):
         self.assertEqual(rec["retries"], 1, "one retry after Codex's store lagged its rollout")
         self.assertEqual(rec["verdict"], "MATCH")
 
+    def test_an_analysis_without_candidates_is_invalid(self):
+        self.assertEqual(dgc.assess("gpt-6-astra", {"results": [], "used_outputs": 3}, [])["verdict"], "INVALID")
+        self.assertEqual(dgc.fingerprint_verdict("gpt-6-astra", {"results": []}, []), ("INVALID", None))
+
     def test_a_mismatch_needs_two_answers(self):
         results = [{"model": "gpt-5.6-luna", "probability": 0.99, "score": 2.0}, {"model": "gpt-6-astra", "probability": 0.01, "score": 0.0}]
         self.assertEqual(dgc.assess("gpt-6-astra", {"results": results, "used_outputs": 1}, [])["verdict"], "SUSPICIOUS")

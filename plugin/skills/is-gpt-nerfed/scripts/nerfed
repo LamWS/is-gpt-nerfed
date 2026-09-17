@@ -960,7 +960,10 @@ def assess(expected: str | None, analysis: dict | None, hard_evidence: list[dict
     if not analysis:
         out["verdict"] = "INVALID"
         return out
-    results = analysis["results"]
+    results = analysis.get("results") or []
+    if not results:  # an analysis with no candidates is no verdict
+        out["verdict"] = "INVALID"
+        return out
     top = results[0]
     out.update(top=top["model"], p_top=top["probability"])
     exp = normalize_model(expected)
