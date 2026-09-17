@@ -12,6 +12,11 @@
     <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>dev.is-gpt-nerfed.menubar</string>
+    <key>CFBundleLocalizations</key>
+    <array>
+        <string>en</string>
+        <string>zh-Hans</string>
+    </array>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>

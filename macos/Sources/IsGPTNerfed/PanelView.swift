@@ -16,16 +16,16 @@ extension ProbeSummary {
 
     /// Sentence-case verdict word; the direction carries the meaning ("Downgrade" rather than "Mismatch · downgrade").
     var word: String {
-        guard let v = verdict else { return status == "failed" ? "Failed" : "…" }
+        guard let v = verdict else { return L10n.tr(status == "failed" ? "Failed" : "…") }
         switch (v, direction) {
-        case ("DOWNGRADED!", _): return "Downgraded"
-        case ("MISMATCH", "downgrade"?): return "Downgrade"
-        case ("MISMATCH", "upgrade"?): return "Upgrade"
-        case ("MISMATCH", _): return "Rerouted"
-        case ("SUSPICIOUS", _): return "Suspicious"
-        case ("MATCH", _): return "Match"
-        case ("UNLISTED", _): return "Unlisted"
-        case ("INVALID", _): return "Invalid"
+        case ("DOWNGRADED!", _): return L10n.tr("Downgraded")
+        case ("MISMATCH", "downgrade"?): return L10n.tr("Downgrade")
+        case ("MISMATCH", "upgrade"?): return L10n.tr("Upgrade")
+        case ("MISMATCH", _): return L10n.tr("Rerouted")
+        case ("SUSPICIOUS", _): return L10n.tr("Suspicious")
+        case ("MATCH", _): return L10n.tr("Match")
+        case ("UNLISTED", _): return L10n.tr("Unlisted")
+        case ("INVALID", _): return L10n.tr("Invalid")
         default: return v.capitalized
         }
     }
@@ -36,18 +36,18 @@ extension ProbeSummary {
     var detail: String {
         var parts: [String] = []
         if isFailure {
-            parts.append(errors?.first ?? "no usable sample")
+            parts.append(errors?.first.map { L10n.backend($0) } ?? L10n.tr("no usable sample"))
         } else if staleAccount == true {
             parts.append(prediction ?? "?")  // unverified for this account: the numbers would only lend false weight
         } else {
             var s = prediction ?? "?"
             if !probabilityText.isEmpty { s += " \(probabilityText)" }
-            if let e = expected, e != prediction, let pe = pExpected { s += ", declared \(Self.pct(pe))" }
+            if let e = expected, e != prediction, let pe = pExpected { s += ", \(L10n.tr("declared %@", Self.pct(pe)))" }
             parts.append(s)
-            if let n = usedOutputs, let q = queries, n < q { parts.append("\(n) of \(q) answers") }
-            if let r = rounds, r > 1 { parts.append("\(r) rounds") }
+            if let n = usedOutputs, let q = queries, n < q { parts.append(L10n.tr("%@ of %@ answers", String(n), String(q))) }
+            if let r = rounds, r > 1 { parts.append(L10n.tr("%@ rounds", String(r))) }
         }
-        if let r = retries, r > 0 { parts.append(r == 1 ? "retried once" : "retried \(r)×") }
+        if let r = retries, r > 0 { parts.append(r == 1 ? L10n.tr("retried once") : L10n.tr("retried %@×", String(r))) }
         return parts.joined(separator: " · ")
     }
 }
@@ -92,25 +92,29 @@ struct VerdictLine: View {
         let stale = probe.staleAccount == true
         HStack(spacing: 4) {
             if stale {
-                Text("Unverified").font(Type.strong).foregroundStyle(.secondary)
+                Text(L10n.tr("Unverified")).font(Type.strong).foregroundStyle(.secondary)
                 Text("·").foregroundStyle(.tertiary)
-                Text(probe.accountState == "unknown" ? "\(probe.word), account unknown" : "\(probe.word), another account")
+                Text(probe.accountState == "unknown"
+                     ? L10n.tr("%@, account unknown", probe.word)
+                     : L10n.tr("%@, another account", probe.word))
                     .foregroundStyle(.tertiary).lineLimit(1)
                     .help(probe.accountState == "unknown"
-                          ? "Recorded before accounts were tracked, so it cannot vouch for the signed-in account. Re-probed when the session is next active."
-                          : "Probed while a different Codex account was signed in; it does not vouch for this account. Re-probed when the session is next active.")
+                          ? L10n.tr("Recorded before accounts were tracked, so it cannot vouch for the signed-in account. Re-probed when the session is next active.")
+                          : L10n.tr("Probed while a different Codex account was signed in; it does not vouch for this account. Re-probed when the session is next active."))
             } else {
                 Text(probe.word).font(Type.strong).foregroundStyle(probe.tint)
                 Text("·").foregroundStyle(.tertiary)
                 Text(probe.detail).foregroundStyle(.secondary).lineLimit(1)
             }
-            if let ago = probe.finishedAgo, !ago.isEmpty {
+            if let ago = L10n.ago(probe.finishedAgo), !ago.isEmpty {
                 Text("·").foregroundStyle(.tertiary)
                 Text(ago).monospacedDigit().foregroundStyle(.tertiary)
             }
         }
         .font(Type.text)
-        .help(probe.quote ?? "")
+        .help(probe.errors?.isEmpty == false
+              ? probe.errors!.map { L10n.backend($0) }.joined(separator: "\n")
+              : L10n.backend(probe.quote ?? ""))
     }
 }
 
@@ -183,10 +187,10 @@ struct PanelView: View {
     @ViewBuilder private var lastProbeLine: some View {
         if let p = store.snapshot?.lastVerdict, store.lastError == nil {
             HStack(spacing: 4) {
-                Text("Last probe").foregroundStyle(.tertiary)
+                Text(L10n.tr("Last probe")).foregroundStyle(.tertiary)
                 Text("·").foregroundStyle(.tertiary)
-                Text(p.staleAccount == true ? "Unverified" : p.word).font(Type.strong).foregroundStyle(p.staleAccount == true ? Color.secondary : p.tint)
-                if let ago = p.finishedAgo, !ago.isEmpty {
+                Text(p.staleAccount == true ? L10n.tr("Unverified") : p.word).font(Type.strong).foregroundStyle(p.staleAccount == true ? Color.secondary : p.tint)
+                if let ago = L10n.ago(p.finishedAgo), !ago.isEmpty {
                     Text("·").foregroundStyle(.tertiary)
                     Text(ago).monospacedDigit().foregroundStyle(.tertiary)
                 }
@@ -196,19 +200,20 @@ struct PanelView: View {
     }
 
     private var statusWord: String {
-        if let err = store.lastError { return "nerfed error: \(err)" }
-        guard let s = store.snapshot else { return "Loading…" }
-        let m = s.overall.message
-        return m.prefix(1).uppercased() + m.dropFirst()
+        if let err = store.lastError { return L10n.tr("nerfed error: %@", L10n.backend(err)) }
+        guard let s = store.snapshot else { return L10n.tr("Loading…") }
+        return L10n.statusMessage(s.overall.message)
     }
 
     /// "w…@example.com", "hooks alive 12s ago", "account switched 45m ago": one line each, only when there is something to say.
     private var quietLines: [String] {
         guard let s = store.snapshot, store.lastError == nil else { return [] }
         var out: [String] = []
-        if let acct = s.account?.label, !acct.isEmpty { out.append(acct) }
+        if let acct = s.account?.label, !acct.isEmpty {
+            out.append(s.config.hideTitles == true ? L10n.tr(acct) : acct)
+        }
         if let (text, attention) = hooksLine, !attention { out.append(text) }
-        if let ago = s.account?.switchedAgo, !ago.isEmpty { out.append("account switched \(ago)") }
+        if let ago = L10n.ago(s.account?.switchedAgo), !ago.isEmpty { out.append(L10n.tr("account switched %@", ago)) }
         return out
     }
 
@@ -216,22 +221,22 @@ struct PanelView: View {
     private var hooksLine: (String, Bool)? {
         guard let s = store.snapshot, store.lastError == nil else { return nil }
         guard let h = s.hooks else {
-            if let ago = s.hooksLastEventAgo, !ago.isEmpty { return ("hooks alive \(ago)", false) }
-            return ("no hook events yet", false)
+            if let ago = L10n.ago(s.hooksLastEventAgo), !ago.isEmpty { return (L10n.tr("hooks alive %@", ago), false) }
+            return (L10n.tr("no hook events yet"), false)
         }
         switch h.state {
         case "untrusted":
-            return ("Hooks not trusted by Codex · run nerfed hooks trust", true)
+            return (L10n.tr("Hooks not trusted by Codex · run nerfed hooks trust"), true)
         case "missing":
-            return ("Codex does not list the plugin's hooks · run install.sh", true)
+            return (L10n.tr("Codex does not list the plugin's hooks · run install.sh"), true)
         default:
             if h.desktopLoaded != true {
-                return ("Codex has not loaded the plugin yet · quit and reopen Codex", true)
+                return (L10n.tr("Codex has not loaded the plugin yet · quit and reopen Codex"), true)
             }
             if h.desktopLoadedCurrent != true, let stale = h.staleSinceInstallS, stale > 240 {
-                return ("Codex still runs the previous version · quit and reopen Codex", true)
+                return (L10n.tr("Codex still runs the previous version · quit and reopen Codex"), true)
             }
-            return ("hooks alive \(h.lastDesktopEventAgo ?? "just now")", false)
+            return (L10n.tr("hooks alive %@", L10n.ago(h.lastDesktopEventAgo) ?? L10n.tr("just now")), false)
         }
     }
 
@@ -240,19 +245,19 @@ struct PanelView: View {
     @ViewBuilder private var setup: some View {
         if let s = store.snapshot, store.lastError == nil, let inst = s.install {
             if inst.codexFound == false {
-                setupRow("Codex is not installed on this Mac. Install the Codex app, then reopen this panel.", button: nil)
+                setupRow(L10n.tr("Codex is not installed on this Mac. Install the Codex app, then reopen this panel."), button: nil)
             } else if inst.pluginEnabled == false {
-                setupRow("The plugin is not registered with Codex yet. Install adds the bundled plugin and records hook trust.",
-                         button: store.installing ? nil : "Install") { Task { await store.installPlugin() } }
+                setupRow(L10n.tr("The plugin is not registered with Codex yet. Install adds the bundled plugin and records hook trust."),
+                         button: store.installing ? nil : L10n.tr("Install")) { Task { await store.installPlugin() } }
             } else if s.hooks?.state == "untrusted" {
-                setupRow("Codex has not been told to trust the plugin's hooks, so nothing runs in your sessions yet.",
-                         button: "Trust hooks") { Task { await store.trustHooks() } }
+                setupRow(L10n.tr("Codex has not been told to trust the plugin's hooks, so nothing runs in your sessions yet."),
+                         button: L10n.tr("Trust hooks")) { Task { await store.trustHooks() } }
             }
         }
     }
 
     private func setupRow(_ text: String, button: String?, action: @escaping () -> Void = {}) -> some View {
-        Group(title: "Setup") {
+        Group(title: L10n.tr("Setup")) {
             HStack(alignment: .center, spacing: 10) {
                 Circle().fill(Color.orange).frame(width: 7, height: 7)
                 Text(text).font(Type.text).foregroundStyle(.secondary).lineLimit(3)
@@ -271,9 +276,10 @@ struct PanelView: View {
 
     private var threads: some View {
         let list = store.snapshot?.threads ?? []
-        return Group(title: "Active sessions", trailing: list.isEmpty ? nil : "\(list.count) in 48 h") {
+        let trailing = list.isEmpty ? nil : L10n.tr("%@ in 48 h", String(list.count))
+        return Group(title: L10n.tr("Active sessions"), trailing: trailing) {
             if list.isEmpty {
-                Text(store.snapshot == nil ? "Reading the ledger…" : "No Codex sessions in the last 48 hours.")
+                Text(store.snapshot == nil ? L10n.tr("Reading the ledger…") : L10n.tr("No Codex sessions in the last 48 hours."))
                     .font(Type.text).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 40)
             } else if plain {  // offscreen self-portrait: ScrollView does not render
@@ -308,7 +314,9 @@ struct PanelView: View {
         let running = snap?.globalRunning ?? false
         let last = snap?.globalProbe
         let failure = snap?.globalFailure
-        return Group(title: "Fresh session", trailing: "\(snap?.defaultModel ?? "default model")\(snap?.defaultEffort.map { " @ \($0)" } ?? "")") {
+        let model = snap?.defaultModel ?? L10n.tr("default model")
+        let effort = snap?.defaultEffort.map { " @ \($0)" } ?? ""
+        return Group(title: L10n.tr("Fresh session"), trailing: model + effort) {
             let history = snap?.globalProbes ?? (last.map { [$0] } ?? [])
             ExpandableRow(canOpen: ReportLines.hasContent(probes: history, evidence: [], failure: failure), toggle: { toggle("fresh") }) {
                 HStack(alignment: .top, spacing: 8) {
@@ -318,27 +326,31 @@ struct PanelView: View {
                         if running {
                             HStack(spacing: 5) {
                                 ProgressView().controlSize(.mini)
-                                Text("Probing \(snap?.config.queries ?? 3) new ephemeral sessions…").font(Type.text).foregroundStyle(.secondary)
+                                Text(L10n.tr("Probing %@ new ephemeral sessions…", String(snap?.config.queries ?? 3))).font(Type.text).foregroundStyle(.secondary)
                             }
                         } else if let p = last {
                             VerdictLine(probe: p)
                         } else {
-                            Text("Never probed · a brand-new session, no history").font(Type.text).foregroundStyle(.secondary)
+                            Text(L10n.tr("Never probed · a brand-new session, no history")).font(Type.text).foregroundStyle(.secondary)
                         }
                     } report: {
                         ReportLines(probes: history, evidence: [], failure: failure)
                     }
                     Spacer(minLength: 8)
                     if !running {
-                        RowButton(title: failure?.retryable == true ? "Retry" : "Probe") { store.probeFresh() }
-                            .help("Start brand-new ephemeral sessions and fingerprint what a new session gets")
+                        RowButton(title: failure?.retryable == true ? L10n.tr("Retry") : L10n.tr("Probe")) { store.probeFresh() }
+                            .help(L10n.tr("Start brand-new ephemeral sessions and fingerprint what a new session gets"))
                     }
                 }
                 .padding(.horizontal, 10).padding(.vertical, 7)
             }
             .contextMenu {
-                if !running { Button(failure?.retryable == true ? "Retry the probe" : "Probe now") { store.probeFresh() } }
-                if let r = snap?.globalReportText { Button("Copy report") { store.copy(r) } }
+                if !running { Button(failure?.retryable == true ? L10n.tr("Retry the probe") : L10n.tr("Probe now")) { store.probeFresh() } }
+                if let r = snap?.globalReportText {
+                    Button(L10n.tr("Copy report")) {
+                        store.copy(L10n.report(r, title: "Fresh session", displayTitle: L10n.tr("Fresh session")))
+                    }
+                }
             }
         }
     }
@@ -347,22 +359,22 @@ struct PanelView: View {
 
     private var footer: some View {
         HStack(spacing: 16) {
-            TextButton(title: showSettings ? "Done" : "Settings") { withAnimation(.snappy(duration: 0.25)) { showSettings.toggle() } }
+            TextButton(title: showSettings ? L10n.tr("Done") : L10n.tr("Settings")) { withAnimation(.snappy(duration: 0.25)) { showSettings.toggle() } }
             Spacer()
             if store.updating {
-                Text("Updating…").font(Type.text).foregroundStyle(.secondary)
+                Text(L10n.tr("Updating…")).font(Type.text).foregroundStyle(.secondary)
             } else if let u = store.snapshot?.update, u.available == true, let latest = u.latest {
                 let failed = (u.status ?? "").hasPrefix("failed")
                 if u.hasArchive == true {
-                    TextButton(title: failed ? "Update failed · retry" : "v\(latest) is out · update", color: .primary) { store.installUpdate() }
-                        .help(failed ? (u.status ?? "") : "Downloads v\(latest), replaces this app and relaunches it. The previous copy goes to the Trash.")
+                    TextButton(title: failed ? L10n.tr("Update failed · retry") : L10n.tr("v%@ is out · update", latest), color: .primary) { store.installUpdate() }
+                        .help(failed ? L10n.backend(u.status ?? "") : L10n.tr("Downloads v%@, replaces this app and relaunches it. The previous copy goes to the Trash.", latest))
                 } else {  // a release without a zip: open the page
-                    TextButton(title: "v\(latest) is out", color: .primary) { store.openURL(u.url ?? "https://github.com/kiyoakii/is-gpt-nerfed/releases") }
+                    TextButton(title: L10n.tr("v%@ is out", latest), color: .primary) { store.openURL(u.url ?? "https://github.com/kiyoakii/is-gpt-nerfed/releases") }
                 }
             } else if let v = store.snapshot?.version {
-                Text("v\(v)" + (store.snapshot?.demo == true ? " · sample data" : "")).font(Type.text).foregroundStyle(.tertiary)
+                Text("v\(v)" + (store.snapshot?.demo == true ? L10n.tr(" · sample data") : "")).font(Type.text).foregroundStyle(.tertiary)
             }
-            TextButton(title: "Quit") { NSApplication.shared.terminate(nil) }
+            TextButton(title: L10n.tr("Quit")) { NSApplication.shared.terminate(nil) }
         }
         .padding(.horizontal, 2)
     }
@@ -422,33 +434,32 @@ struct ReportLines: View {
             if let p = probes.first {
                 VerdictLine(probe: p)
                 if let r = p.results, !r.isEmpty, !p.isFailure, p.staleAccount != true {
-                    fact("Fingerprint", r.map { "\($0.model ?? "?") \(ProbeSummary.pct($0.probability))" }.joined(separator: " · "))
+                    fact(L10n.tr("Fingerprint"), r.map { "\($0.model ?? "?") \(ProbeSummary.pct($0.probability))" }.joined(separator: " · "))
                 }
                 ForEach(Array((p.errors ?? []).enumerated()), id: \.offset) { _, e in
-                    fact("Problem", e, tint: .orange)
+                    fact(L10n.tr("Problem"), L10n.backend(e), tint: .orange)
                 }
                 if p.staleAccount == true {
-                    fact("Account", p.accountState == "unknown"
-                         ? "recorded before accounts were tracked; it cannot vouch for the signed-in account"
-                         : "probed under another Codex account; it does not vouch for this one")
+                    fact(L10n.tr("Account"), p.accountState == "unknown"
+                         ? L10n.tr("recorded before accounts were tracked; it cannot vouch for the signed-in account")
+                         : L10n.tr("probed under another Codex account; it does not vouch for this one"))
                 }
             } else {
-                Text("No probe yet").foregroundStyle(.tertiary)
+                Text(L10n.tr("No probe yet")).foregroundStyle(.tertiary)
             }
             if let f = failure {  // the tool's own failure, not a verdict: what went wrong, and when
-                fact("Attempt", (["failed " + (f.finishedAgo ?? ""), f.errors?.first ?? "no usable answer"]
-                                 + ((f.retries ?? 0) > 0 ? [f.retries == 1 ? "retried once" : "retried \(f.retries ?? 0)×"] : [])).joined(separator: " · "))
+                fact(L10n.tr("Attempt"), failureDetail(f))
             }
             ForEach(Array(probes.dropFirst().prefix(4))) { p in
                 HStack(spacing: 4) {
-                    Text("Earlier").foregroundStyle(.tertiary)
+                    Text(L10n.tr("Earlier")).foregroundStyle(.tertiary)
                     Text("·").foregroundStyle(.tertiary)
                     VerdictLine(probe: p)
                 }
             }
             ForEach(evidence) { e in
                 let on = e.active ?? true
-                Text(e.text + (e.ago.map { " · \($0)" } ?? "") + (on ? "" : " · reverted"))
+                Text(L10n.evidenceText(e.text, ago: e.ago, active: on))
                     .foregroundStyle(on ? (e.severity == "hard" ? Color.red : (e.severity == "soft" ? Color.orange : Color.green)) : Color.secondary)
                     .lineLimit(2)
             }
@@ -465,6 +476,16 @@ struct ReportLines: View {
         }
     }
 
+    private func failureDetail(_ failure: ProbeSummary) -> String {
+        var attempt = L10n.tr("failed")
+        if let ago = L10n.ago(failure.finishedAgo), !ago.isEmpty { attempt += " \(ago)" }
+        var details = [attempt, failure.errors?.first.map { L10n.backend($0) } ?? L10n.tr("no usable answer")]
+        if let retries = failure.retries, retries > 0 {
+            details.append(retries == 1 ? L10n.tr("retried once") : L10n.tr("retried %@×", String(retries)))
+        }
+        return details.joined(separator: " · ")
+    }
+
 }
 
 /// The finding with its time when that fits on one line; without the time otherwise (a lone "9m ago" on a second
@@ -476,8 +497,8 @@ struct EvidenceLine: View {
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
-            Text(text + (ago.map { " · \($0)" } ?? "")).lineLimit(1).fixedSize(horizontal: true, vertical: false)
-            Text(text).lineLimit(2)
+            Text(L10n.evidenceText(text, ago: ago, active: true)).lineLimit(1).fixedSize(horizontal: true, vertical: false)
+            Text(L10n.backend(text)).lineLimit(2)
         }
         .font(Type.text).foregroundStyle(color)
     }
@@ -514,27 +535,31 @@ struct ThreadRow: View {
                 HStack(alignment: .top, spacing: 8) {
                     Circle().fill(dot).frame(width: 7, height: 7).padding(.top, 5)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(thread.title).font(Type.title).lineLimit(1)
+                        Text(L10n.sessionTitle(thread.title, isDemo: store.snapshot?.demo == true,
+                                               isHidden: store.snapshot?.config.hideTitles == true))
+                            .font(Type.title).lineLimit(1)
                         SwapLines(isOpen: isOpen) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(meta).font(Type.text).foregroundStyle(.secondary).lineLimit(1)
                                 if thread.probeRunning {
                                     HStack(spacing: 5) {
                                         ProgressView().controlSize(.mini)
-                                        Text(thread.probeNote.map { "Probing · \($0)…" } ?? "Probing, ephemeral forks in flight…").font(Type.text).foregroundStyle(.secondary)
+                                        let text = thread.probeNote.map { L10n.tr("Probing · %@…", L10n.backend($0)) }
+                                            ?? L10n.tr("Probing, ephemeral forks in flight…")
+                                        Text(text).font(Type.text).foregroundStyle(.secondary)
                                     }
                                 } else if let p = thread.lastProbe {
                                     VerdictLine(probe: p)
                                 } else {
-                                    Text(thread.due ? "No probe yet · due" : "No probe yet").font(Type.text).foregroundStyle(.tertiary)
+                                    Text(thread.due ? L10n.tr("No probe yet · due") : L10n.tr("No probe yet")).font(Type.text).foregroundStyle(.tertiary)
                                 }
                                 if let ev = thread.lastEvidence, let sev = thread.lastEvidenceSeverity {
                                     EvidenceLine(text: ev, ago: thread.lastEvidenceAgo, color: sev == "hard" ? .red : (sev == "soft" ? .orange : .green))
                                         .help(sev == "good"
-                                              ? "Codex's own records show a switch to a better model (a rollout). Good news, still in effect. Click the row for the history."
+                                              ? L10n.tr("Codex's own records show a switch to a better model (a rollout). Good news, still in effect. Click the row for the history.")
                                               : sev == "hard"
-                                              ? "Found in the session's own records, independent of any probe, and still in effect. Click the row for the history."
-                                              : "Applied through the session's settings and still in effect: either you changed it, or Codex did (it lowers effort automatically at usage limits). Click the row for the history.")
+                                              ? L10n.tr("Found in the session's own records, independent of any probe, and still in effect. Click the row for the history.")
+                                              : L10n.tr("Applied through the session's settings and still in effect: either you changed it, or Codex did (it lowers effort automatically at usage limits). Click the row for the history."))
                                 }
                             }
                         } report: {
@@ -549,20 +574,26 @@ struct ThreadRow: View {
         }
         .contextMenu {
             if !thread.probeRunning, !thread.halted {
-                Button(thread.lastFailure?.retryable == true ? "Retry the probe" : "Probe now") { store.probe(thread) }
+                Button(thread.lastFailure?.retryable == true ? L10n.tr("Retry the probe") : L10n.tr("Probe now")) { store.probe(thread) }
             }
-            if let r = thread.reportText { Button("Copy report") { store.copy(r) } }
+            if let r = thread.reportText {
+                Button(L10n.tr("Copy report")) {
+                    let title = L10n.sessionTitle(thread.title, isDemo: store.snapshot?.demo == true,
+                                                  isHidden: store.snapshot?.config.hideTitles == true)
+                    store.copy(L10n.report(r, title: thread.title, displayTitle: title))
+                }
+            }
             if let cwd = thread.cwd, !cwd.isEmpty, FileManager.default.fileExists(atPath: cwd) {
-                Button("Open folder in Finder") { store.reveal(cwd) }
+                Button(L10n.tr("Open folder in Finder")) { store.reveal(cwd) }
             }
         }
     }
 
     private var meta: String {
         var parts = ["\(thread.model ?? "?")\(thread.effort.map { " @ \($0)" } ?? "")"]
-        if thread.turns > 0 { parts.append(thread.turns == 1 ? "1 turn" : "\(thread.turns) turns") }
-        if thread.halted { parts.append("halted") }
-        if let ago = thread.updatedAgo, !ago.isEmpty { parts.append("active \(ago)") }
+        if thread.turns > 0 { parts.append(thread.turns == 1 ? L10n.tr("1 turn") : L10n.tr("%@ turns", String(thread.turns))) }
+        if thread.halted { parts.append(L10n.tr("halted")) }
+        if let ago = L10n.ago(thread.updatedAgo), !ago.isEmpty { parts.append(L10n.tr("active %@", ago)) }
         return parts.joined(separator: " · ")
     }
 
@@ -570,11 +601,11 @@ struct ThreadRow: View {
         if thread.probeRunning {
             EmptyView()
         } else if thread.halted {
-            RowButton(title: "Resume", destructive: true) { Task { await store.resume(thread) } }
-                .help("Clear the halt (work tools are denied in this session)")
+            RowButton(title: L10n.tr("Resume"), destructive: true) { Task { await store.resume(thread) } }
+                .help(L10n.tr("Clear the halt (work tools are denied in this session)"))
         } else {
-            RowButton(title: thread.lastFailure?.retryable == true ? "Retry" : "Probe") { store.probe(thread) }
-                .help("Fork this session ephemerally (3 parallel forks) and fingerprint the answering model")
+            RowButton(title: thread.lastFailure?.retryable == true ? L10n.tr("Retry") : L10n.tr("Probe")) { store.probe(thread) }
+                .help(L10n.tr("Fork this session ephemerally (3 parallel forks) and fingerprint the answering model"))
         }
     }
 }

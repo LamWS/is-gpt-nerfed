@@ -6,7 +6,7 @@ enum DGCError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .notFound: return "nerfed not found: the app bundle is incomplete. Rebuild with macos/build.sh or run ./install.sh from a checkout."
+        case .notFound: return L10n.tr("nerfed not found: the app bundle is incomplete. Rebuild with macos/build.sh or run ./install.sh from a checkout.")
         case .failed(let msg): return msg
         }
     }
@@ -63,7 +63,7 @@ enum DGC {
                 do {
                     try process.run()
                 } catch {
-                    continuation.resume(throwing: DGCError.failed("cannot start python3: \(error.localizedDescription)"))
+                    continuation.resume(throwing: DGCError.failed(L10n.tr("cannot start python3: %@", error.localizedDescription)))
                     return
                 }
                 let watchdog = DispatchWorkItem { if process.isRunning { process.terminate() } }
@@ -74,7 +74,7 @@ enum DGC {
                 watchdog.cancel()
                 if process.terminationStatus != 0 {
                     let msg = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-                    continuation.resume(throwing: DGCError.failed(msg?.isEmpty == false ? msg! : "dgc exited with \(process.terminationStatus)"))
+                    continuation.resume(throwing: DGCError.failed(msg?.isEmpty == false ? msg! : L10n.tr("dgc exited with %@", String(process.terminationStatus))))
                 } else {
                     continuation.resume(returning: String(data: data, encoding: .utf8) ?? "")
                 }

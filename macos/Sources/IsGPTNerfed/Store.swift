@@ -154,7 +154,7 @@ final class Store {
         }
         await refresh()
         if snapshot?.install?.pluginEnabled != true {
-            lastError = "Install did not complete; run ./install.sh from a checkout or see nerfed doctor"
+            lastError = L10n.tr("Install did not complete; run ./install.sh from a checkout or see nerfed doctor")
         }
     }
 

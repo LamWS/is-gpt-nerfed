@@ -6,59 +6,59 @@ struct SettingsView: View {
     @Environment(\.plainRendering) private var plain
 
     private let frequencies: [(String, String)] = [
-        ("manual", "Manually"), ("turns:4", "Every 4 turns"), ("turns:8", "Every 8 turns"), ("turns:16", "Every 16 turns"),
-        ("15m", "Every 15 min of activity"), ("30m", "Every 30 min of activity"), ("1h", "Every hour of activity"), ("2h", "Every 2 hours of activity"),
+        ("manual", L10n.tr("Manually")), ("turns:4", L10n.tr("Every 4 turns")), ("turns:8", L10n.tr("Every 8 turns")), ("turns:16", L10n.tr("Every 16 turns")),
+        ("15m", L10n.tr("Every 15 min of activity")), ("30m", L10n.tr("Every 30 min of activity")), ("1h", L10n.tr("Every hour of activity")), ("2h", L10n.tr("Every 2 hours of activity")),
     ]
     private let heartbeats: [(String, String)] = [
-        ("manual", "Manually"), ("15m", "Every 15 minutes"), ("30m", "Every 30 minutes"), ("1h", "Every hour"), ("2h", "Every 2 hours"), ("6h", "Every 6 hours"),
+        ("manual", L10n.tr("Manually")), ("15m", L10n.tr("Every 15 minutes")), ("30m", L10n.tr("Every 30 minutes")), ("1h", L10n.tr("Every hour")), ("2h", L10n.tr("Every 2 hours")), ("6h", L10n.tr("Every 6 hours")),
     ]
-    private let modes: [(String, String)] = [("auto", "Probe in the background"), ("nudge", "Only remind me")]
+    private let modes: [(String, String)] = [("auto", L10n.tr("Probe in the background")), ("nudge", L10n.tr("Only remind me"))]
     private let confidences: [(Double, String)] = [(0.7, "70%"), (0.8, "80%"), (0.9, "90%"), (0.95, "95%")]
 
     var body: some View {
         let cfg = store.snapshot?.config
         VStack(alignment: .leading, spacing: 14) {
-            Group(title: "Schedule") {
-                row("Probe each active session") { picker(cfg?.frequency ?? "30m", frequencies, key: "frequency") }
+            Group(title: L10n.tr("Schedule")) {
+                row(L10n.tr("Probe each active session")) { picker(cfg?.frequency ?? "30m", frequencies, key: "frequency") }
                 RowSeparator()
-                row("Fresh-session heartbeat") { picker(cfg?.freshFrequency ?? "manual", heartbeats, key: "fresh_frequency") }
+                row(L10n.tr("Fresh-session heartbeat")) { picker(cfg?.freshFrequency ?? "manual", heartbeats, key: "fresh_frequency") }
                 RowSeparator()
-                row("When a probe is due") { picker(cfg?.mode ?? "auto", modes, key: "mode") }
+                row(L10n.tr("When a probe is due")) { picker(cfg?.mode ?? "auto", modes, key: "mode") }
                 RowSeparator()
-                row("Forks per probe") {
+                row(L10n.tr("Forks per probe")) {
                     segments(["1", "2", "3"], selected: String(cfg?.queries ?? 3)) { v in Task { await store.setConfig("queries", v) } }
                         .frame(width: 110)
                 }
                 RowSeparator()
-                row("Run the forks in parallel") { toggle("parallel", cfg?.parallel ?? true) }
+                row(L10n.tr("Run the forks in parallel")) { toggle("parallel", cfg?.parallel ?? true) }
             }
-            Group(title: "Verdict") {
-                row("Call a mismatch at") {
+            Group(title: L10n.tr("Verdict")) {
+                row(L10n.tr("Call a mismatch at")) {
                     segments(confidences.map(\.1), selected: label(for: cfg?.mismatchConfidence ?? 0.8)) { v in
                         if let c = confidences.first(where: { $0.1 == v }) { Task { await store.setConfig("mismatch_confidence", String(c.0)) } }
                     }
                     .frame(width: 190)
                 }
                 RowSeparator()
-                row("Halt the session after a mismatch") { toggle("halt_on_mismatch", cfg?.haltOnMismatch ?? false) }
+                row(L10n.tr("Halt the session after a mismatch")) { toggle("halt_on_mismatch", cfg?.haltOnMismatch ?? false) }
                 RowSeparator()
-                row("Scan rollouts on every turn") { toggle("passive", cfg?.passive ?? true) }
+                row(L10n.tr("Scan rollouts on every turn")) { toggle("passive", cfg?.passive ?? true) }
             }
-            Group(title: "Alerts") {
-                row("Notifications") { toggle("notify", cfg?.notify ?? true) }
+            Group(title: L10n.tr("Alerts")) {
+                row(L10n.tr("Notifications")) { toggle("notify", cfg?.notify ?? true) }
                 RowSeparator()
-                row("Also notify on a match") { toggle("notify_on_ok", cfg?.notifyOnOk ?? false) }
+                row(L10n.tr("Also notify on a match")) { toggle("notify_on_ok", cfg?.notifyOnOk ?? false) }
                 RowSeparator()
-                row("Post matches into the session") { toggle("announce_ok", cfg?.announceOk ?? false) }
+                row(L10n.tr("Post matches into the session")) { toggle("announce_ok", cfg?.announceOk ?? false) }
                 RowSeparator()
-                row("Sound on a downgrade") { toggle("sound", cfg?.sound ?? true) }
+                row(L10n.tr("Sound on a downgrade")) { toggle("sound", cfg?.sound ?? true) }
             }
-            Group(title: "App") {
-                row("Hide session titles and account (for screenshots)") { toggle("hide_titles", cfg?.hideTitles ?? false) }
+            Group(title: L10n.tr("App")) {
+                row(L10n.tr("Hide session titles and account (for screenshots)")) { toggle("hide_titles", cfg?.hideTitles ?? false) }
                 RowSeparator()
-                row("Check for updates") { toggle("check_updates", cfg?.checkUpdates ?? true) }
+                row(L10n.tr("Check for updates")) { toggle("check_updates", cfg?.checkUpdates ?? true) }
                 RowSeparator()
-                row("Launch at login") {
+                row(L10n.tr("Launch at login")) {
                     if plain {
                         PlainSwitch(on: store.launchAtLogin)
                     } else {
@@ -83,12 +83,14 @@ struct SettingsView: View {
 
     @ViewBuilder
     private func picker(_ current: String, _ options: [(String, String)], key: String) -> some View {
+        let fallback = key == "frequency" || key == "fresh_frequency"
+            ? L10n.frequency(current, active: key == "frequency") : current
         if plain {
-            PlainValue(text: options.first(where: { $0.0 == current })?.1 ?? current)
+            PlainValue(text: options.first(where: { $0.0 == current })?.1 ?? fallback)
         } else {
             Picker("", selection: Binding(get: { current }, set: { v in Task { await store.setConfig(key, v) } })) {
                 ForEach(options, id: \.0) { Text($0.1).tag($0.0) }
-                if !options.contains(where: { $0.0 == current }) { Text(current).tag(current) }
+                if !options.contains(where: { $0.0 == current }) { Text(fallback).tag(current) }
             }
             .labelsHidden().controlSize(.small).frame(width: 170)
         }

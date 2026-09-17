@@ -3,12 +3,18 @@ import PackageDescription
 
 let package = Package(
     name: "IsGPTNerfed",
+    defaultLocalization: "en",
     platforms: [.macOS("26.0")],
     targets: [
         .executableTarget(
             name: "IsGPTNerfed",
             path: "Sources/IsGPTNerfed",
+            resources: [.process("Resources")],
             swiftSettings: [.unsafeFlags(["-Osize"])]
+        ),
+        .testTarget(
+            name: "IsGPTNerfedTests",
+            dependencies: ["IsGPTNerfed"]
         )
     ]
 )
