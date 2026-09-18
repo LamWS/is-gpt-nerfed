@@ -39,7 +39,7 @@ sys.path.insert(0, HERE)
 import codex_appserver as cas  # noqa: E402
 import modeltrace_core as core  # noqa: E402
 
-VERSION = "0.5.0"
+VERSION = "0.5.1"
 DGC_BIN = os.path.abspath(__file__)
 SKILL_DIR = os.path.dirname(HERE)
 PLUGIN_ROOT = os.environ.get("PLUGIN_ROOT") or os.environ.get("CLAUDE_PLUGIN_ROOT") or os.path.dirname(os.path.dirname(SKILL_DIR))
@@ -747,6 +747,9 @@ def link_session(st: dict) -> None:
             st["model"] = parent["model"]
 
 
+ACTIVE_WINDOW_S = 15 * 60  # a thread with a hook event this recent is "active": shown so in the panel, in scope for `tick`
+
+
 def probe_due(st: dict, cfg: dict, account: str | None = None) -> bool:
     try:
         kind, n = parse_frequency(cfg.get("frequency"))
@@ -1356,6 +1359,40 @@ def spawn_worker(thread_id: str, cfg: dict) -> bool:
         return False
 
 
+def run_schedule(st: dict, cfg: dict, acct: dict, messages: list, via: str = "hook") -> bool:
+    """The probe schedule for one main session (call it under the session's lock): launch a worker in mode auto,
+    or queue a nudge in mode nudge. The Stop hook runs it after every turn; `tick` runs it for threads that are due
+    but quiet. Returns True when a worker was launched."""
+    sid = st["sid"]
+    running = st.get("probe_running")
+    if running and not pid_alive(running.get("pid")):
+        st["probe_running"] = running = None
+    if st.get("kind") != "main" or running or not (st.get("requested") or probe_due(st, cfg, acct["id"])):
+        return False
+    try:
+        kind, n = parse_frequency(cfg.get("frequency"))
+    except ValueError:
+        kind, n = "manual", 0
+    switched = stale_for_account(st.get("last_probe_account"), acct["id"]) and st.get("probes")
+    why = ("requested" if st.get("requested") else "account changed since the last probe" if switched
+           else f"{st['turns'] - int(st.get('last_probe_turn') or 0)} turns since the last probe" if kind == "turns"
+           else f"{n} min elapsed")
+    log_event("probe_due", sid=sid, why=why, mode=cfg.get("mode"), turns=st["turns"], account=acct["id"], via=via)
+    if cfg.get("mode") == "auto":
+        if not spawn_worker(sid, cfg):
+            return False
+        st["probe_running"] = {"pid": None, "ts": now(), "probe": "spawning"}
+        st["last_probe_turn"], st["last_probe_ts"], st["requested"] = st["turns"], now(), False
+        log_event("worker_spawn", sid=sid, why=why, via=via)
+        return True
+    if via != "hook":  # a nudge is a message inside the thread, which only a hook can deliver
+        return False
+    st["last_nudge_turn"], st["last_nudge_ts"] = st["turns"], now()
+    messages.append(pet_line("NUDGE", why=why, cmd=SKILL_CMD, side=SIDE_CMD))
+    log_event("nudge", sid=sid, why=why)
+    return False
+
+
 # ---- self-answer mode (inside an ephemeral /side conversation) ----------------------------------
 
 
@@ -1567,6 +1604,34 @@ def cmd_worker(args) -> int:
     return 0
 
 
+def cmd_tick(args) -> int:
+    """The app's scheduler heartbeat. The Stop hook runs the probe schedule after every turn, so a thread whose
+    due time passes while it is quiet would wait for a Stop event that may never come (a session finished at
+    minute 29 is never probed). The app calls this whenever the snapshot shows a thread that is due and active."""
+    cfg = load_config()
+    if cfg.get("mode") != "auto":
+        print(f"{iso()} tick: mode is {cfg.get('mode')}; probes are offered inside the thread, nothing to launch")
+        return 0
+    ensure_dirs()
+    acct = note_account("tick")
+    launched, skipped = [], 0
+    for st in all_sessions():
+        if st.get("kind") != "main" or st.get("ended") or st.get("halt"):
+            continue
+        if now() - (parse_iso(st.get("updated")) or 0) >= ACTIVE_WINDOW_S:  # quiet for a while: whoever was here has left
+            continue
+        if not (st.get("requested") or probe_due(st, cfg, acct["id"])) or not interactive_thread(db_thread(st["sid"])):
+            continue
+        with locked_session(st["sid"]) as live:  # decide again under the lock: a hook may have run the schedule meanwhile
+            if run_schedule(live, cfg, acct, [], via="tick"):
+                launched.append(live["sid"])
+            else:
+                skipped += 1
+    what = ("launched a probe for " + ", ".join(launched)) if launched else "nothing due"
+    print(f"{iso()} tick: {what}" + (f" · {skipped} already running or no longer due" if skipped else ""))
+    return 0
+
+
 def cmd_probe_fresh(args) -> int:
     cfg = load_config()
     if fresh_running():
@@ -1666,25 +1731,7 @@ def cmd_hook(args) -> int:
                         messages.append(pet_line("SETTINGS_DOWNGRADE", detail=e["detail"]))
                     elif e["severity"] == "good":
                         messages.append(pet_line("UPGRADED", seed=e["detail"], detail=e["detail"]))
-            running = st.get("probe_running")
-            if running and not pid_alive(running.get("pid")):
-                st["probe_running"] = running = None
-            if st["kind"] == "main" and not running and (st.get("requested") or probe_due(st, cfg, acct["id"])):
-                kind, n = parse_frequency(cfg.get("frequency"))
-                switched = stale_for_account(st.get("last_probe_account"), acct["id"]) and st.get("probes")
-                why = ("requested" if st.get("requested") else "account changed since the last probe" if switched
-                       else f"{st['turns'] - int(st.get('last_probe_turn') or 0)} turns since the last probe" if kind == "turns"
-                       else f"{n} min elapsed")
-                log_event("probe_due", sid=sid, why=why, mode=cfg.get("mode"), turns=st["turns"], account=acct["id"])
-                if cfg.get("mode") == "auto":
-                    if spawn_worker(sid, cfg):
-                        st["probe_running"] = {"pid": None, "ts": now(), "probe": "spawning"}
-                        st["last_probe_turn"], st["last_probe_ts"], st["requested"] = st["turns"], now(), False
-                        log_event("worker_spawn", sid=sid, why=why)
-                else:
-                    st["last_nudge_turn"], st["last_nudge_ts"] = st["turns"], now()
-                    messages.append(pet_line("NUDGE", why=why, cmd=SKILL_CMD, side=SIDE_CMD))
-                    log_event("nudge", sid=sid, why=why)
+            run_schedule(st, cfg, acct, messages)
             if st["kind"] == "main" and fresh_due(cfg, acct["id"]) and spawn_fresh_worker():
                 log_event("fresh_due", why=f"{cfg.get('fresh_frequency')} elapsed", triggered_by=sid)
             if messages:
@@ -2108,7 +2155,7 @@ def build_snapshot(cfg: dict, hours: float = 48.0) -> dict:
         t["unverified"] = stale  # verdict obtained under another Codex account: says nothing about this one
         t["updated"] = iso(t["updated_ts"]) if t["updated_ts"] else None
         t["updated_ago"] = ago(t["updated_ts"])
-        t["active"] = bool(t["updated_ts"]) and (now() - t["updated_ts"]) < 15 * 60
+        t["active"] = bool(t["updated_ts"]) and (now() - t["updated_ts"]) < ACTIVE_WINDOW_S
         t["alert"] = t["hard_evidence"] > 0 or bool(t["last_probe"] and t["last_probe"]["is_downgrade"] and not stale)
         t["suspicious"] = bool(t["last_probe"] and t["last_probe"]["is_suspicious"] and not stale) and not t["alert"]
         t.setdefault("good_evidence", 0)
@@ -3148,6 +3195,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--thread")
     s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_log)
+    s = sub.add_parser("tick", help="(called by the app) run the probe schedule for threads that are due and active but quiet")
+    s.set_defaults(fn=cmd_tick)
     s = sub.add_parser("snapshot", help="JSON feed for the menu-bar app: sessions, latest probes, config")
     s.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
     s.add_argument("--pretty", action="store_true")

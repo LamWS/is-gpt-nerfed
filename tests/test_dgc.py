@@ -430,6 +430,46 @@ class ForkProbeTests(unittest.TestCase):
             out = json.loads(run_hook({**base, "hook_event_name": "Stop"}))
         self.assertIn("$is-gpt-nerfed", out["systemMessage"])
 
+    def test_tick_probes_a_due_thread_that_went_quiet(self):
+        dgc.save_config({**dgc.load_config(), "frequency": "30m", "mode": "auto"})
+        sid = "main-thread-9"
+        base = {"session_id": sid, "cwd": TMP, "model": "gpt-6-astra"}
+        log_path = os.path.join(os.environ["NERFED_HOME"], "log.jsonl")
+        with mock.patch.object(dgc, "link_session", side_effect=lambda st: st.update(kind="main")), \
+                mock.patch.object(dgc, "spawn_worker", return_value=True) as spawn:
+            run_hook({**base, "hook_event_name": "UserPromptSubmit", "prompt": "1"})
+            run_hook({**base, "hook_event_name": "Stop"})
+            launches = lambda: [c for c in spawn.call_args_list if c.args[0] == sid]  # the ledger is shared with other tests
+            rc, out = run_cli(["tick"])
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(launches(), [])  # a minute old: not due
+            self.assertNotIn(sid, out)
+            st = dgc.load_session(sid)
+            st["created_ts"] = dgc.now() - 31 * 60  # the thread went quiet at minute 29: no Stop event is coming
+            dgc.write_json(dgc.session_path(sid), st)
+            rc, out = run_cli(["tick"])
+            self.assertEqual(len(launches()), 1)
+            self.assertIn(sid, out)
+            st = dgc.load_session(sid)
+            self.assertEqual(st["probe_running"]["probe"], "spawning")
+            self.assertGreater(st["last_probe_ts"], dgc.now() - 5)
+            run_cli(["tick"])
+            self.assertEqual(len(launches()), 1)  # just probed: not due for another 30 minutes
+            # due again, but nobody has touched the thread for an hour: whoever was here has left
+            st["last_probe_ts"], st["probe_running"] = dgc.now() - 31 * 60, None
+            st["updated"] = dgc.iso(dgc.now() - 3600)
+            dgc.write_json(dgc.session_path(sid), st)
+            run_cli(["tick"])
+            self.assertEqual(len(launches()), 1)
+            # the next Stop event in that thread runs the schedule as before
+            run_hook({**base, "hook_event_name": "Stop"})
+            self.assertEqual(len(launches()), 2)
+        dgc.save_config({**dgc.load_config(), "mode": "nudge"})
+        rc, out = run_cli(["tick"])
+        self.assertIn("nothing to launch", out)
+        spawns = [e for e in dgc.iter_jsonl(log_path) if e.get("kind") == "worker_spawn" and e.get("sid") == sid]
+        self.assertEqual([e.get("via") for e in spawns], ["tick", "hook"])
+
     def test_self_answer_mode_inside_side_conversation(self):
         rows = fixture_rows()
         astra = [r for r in rows if r["model_id"] == "gpt-6-astra"]

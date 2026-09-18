@@ -28,6 +28,7 @@ final class Store {
     private var pendingFresh: Date?
     private let pendingTimeout: TimeInterval = 45
     private var lastHeartbeat = Date.distantPast
+    private var lastTick = Date.distantPast
 
     var isAlert: Bool { (snapshot?.overall.downgraded ?? 0) > 0 }
     var isWarn: Bool { !isAlert && (snapshot?.overall.suspicious ?? 0) > 0 }
@@ -71,6 +72,13 @@ final class Store {
                 lastHeartbeat = Date()
                 appLog.notice("fresh-session heartbeat due; starting a fresh probe")
                 probeFresh()
+            }
+            // Thread heartbeat: the Stop hook runs the schedule while a thread is in use, so a thread that goes quiet
+            // right after its due time would wait for a Stop event that may never come. The app covers that gap.
+            if !demo, Date().timeIntervalSince(lastTick) > 60,
+               snap.threads.contains(where: { $0.due && $0.active && !$0.probeRunning && !$0.halted }) {
+                lastTick = Date()
+                tick()
             }
         } catch {
             if lastError != error.localizedDescription {
@@ -124,6 +132,21 @@ final class Store {
             lastError = error.localizedDescription
         }
         Task { try? await Task.sleep(for: .seconds(3)); await refresh() }
+    }
+
+    /// Scheduler tick: probes threads that are due and still active but quiet, which no hook event would pick up.
+    func tick() {
+        appLog.notice("a due thread is active but quiet; running the scheduler tick")
+        Task {
+            do {
+                let out = try await DGC.run(["tick"], timeout: 20).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !out.isEmpty { appLog.notice("tick: \(out.suffix(300), privacy: .public)") }
+            } catch {
+                appLog.error("tick failed: \(error.localizedDescription, privacy: .public)")
+            }
+            try? await Task.sleep(for: .seconds(3))
+            await refresh()
+        }
     }
 
     /// Global probe: brand-new ephemeral sessions with the default model, no thread context.

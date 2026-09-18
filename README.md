@@ -83,8 +83,9 @@ English as the fallback. This includes app-generated evidence, progress messages
 app. User session titles, model IDs, reasoning-effort values and unrecognized external diagnostics keep their
 original text. Stored records, CLI output, notifications and ModelTrace's calibrated probe prompts are unchanged.
 
-Every session you work in is probed in the background after 30 minutes of activity. To probe a session right away,
-say `$is-gpt-nerfed` in it.
+Every session you work in is probed in the background after 30 minutes of activity: the hooks run the schedule
+after each turn, and the menu bar app catches a session that goes quiet right after its due time. To probe a
+session right away, say `$is-gpt-nerfed` in it.
 
 The menu bar panel lists the sessions of the last 48 hours with their last verdict. Click a session for its report
 (fingerprint, earlier probes, evidence) and right-click for actions. Each session has Probe and Retry, and the Fresh

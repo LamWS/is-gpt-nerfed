@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.1 — 2026-09-18
+
+- The 0.5.0 app crashed at launch on every Mac except the one that built it: the localization looked its resource
+  bundle up through SwiftPM's generated accessor, which only checks the .app root and the build machine's absolute
+  path. The bundle is now located explicitly (Contents/Resources first) and a missing bundle falls back to English
+  instead of trapping. Reported and fixed by JoyboyBrian (#2, #4).
+- `nerfed` linked into ~/.local/bin by install.sh failed with "No such file or directory": the wrapper resolved the
+  repository from the symlink's own path. It follows the symlink first now. Reported and fixed by JoyboyBrian (#3, #5).
+- The 30-minute schedule missed sessions: the hooks only ran it at the end of a turn, so a session that went quiet
+  before its due time (or whose last turn ended in an error, which fires no Stop hook) was never probed, and the
+  panel showed it as "due" forever. The app now runs `nerfed tick` when the snapshot shows a thread that is due and
+  active, and the tick launches the same background probe the Stop hook would. Threads quiet for more than 15
+  minutes are left alone.
+
 ## 0.5.0 — 2026-09-18
 
 - The app speaks Simplified Chinese: the panel, settings, evidence lines, progress and error messages follow the
