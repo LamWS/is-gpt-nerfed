@@ -4,8 +4,8 @@ import Foundation
 /// Dynamic model names, effort identifiers, session titles, IDs, and unknown external text stay untouched.
 extension L10n {
     private static let backendEnglishBundle: Bundle = {
-        guard let path = Bundle.module.path(forResource: "en", ofType: "lproj"),
-              let bundle = Bundle(path: path) else { return .module }
+        guard let path = resources.path(forResource: "en", ofType: "lproj"),
+              let bundle = Bundle(path: path) else { return resources }
         return bundle
     }()
 
@@ -517,7 +517,7 @@ extension L10n {
     }
 
     private static func backendFormat(_ key: String, arguments: [String] = [], language: String?) -> String {
-        let bundle = language.map { backendResourceBundle(for: $0) ?? backendEnglishBundle } ?? .module
+        let bundle = language.map { backendResourceBundle(for: $0) ?? backendEnglishBundle } ?? resources
         let translated = bundle.localizedString(forKey: key, value: key, table: "Backend")
         let format = translated == key
             ? backendEnglishBundle.localizedString(forKey: key, value: key, table: "Backend")
@@ -534,6 +534,6 @@ extension L10n {
     private static func usesSimplifiedChinese(language: String?) -> Bool {
         // Localization identifiers come back lowercased from a SwiftPM resource bundle (zh-hans), so compare loosely.
         if let language { return language.lowercased() == "zh-hans" }
-        return Bundle.module.preferredLocalizations.contains { $0.lowercased() == "zh-hans" }
+        return resources.preferredLocalizations.contains { $0.lowercased() == "zh-hans" }
     }
 }

@@ -2,19 +2,37 @@ import Foundation
 
 /// Interface copy, including the presentation of backend messages. Stored records and user content stay untouched.
 enum L10n {
+    private final class BundleFinder {}
+
+    /// The SwiftPM resource bundle. Not `Bundle.module`: the accessor SwiftPM's native build system generates only
+    /// looks at the .app root and at the absolute `.build` path of the machine that built it, so a release built
+    /// that way traps on every other machine (#2). A missing bundle degrades to `Bundle.main`, whose lookups return
+    /// the keys, which are the English strings.
+    static let resources: Bundle = {
+        let name = "IsGPTNerfed_IsGPTNerfed.bundle"
+        let finder = Bundle(for: BundleFinder.self)
+        let dirs = [Bundle.main.resourceURL, Bundle.main.bundleURL,                  // .app: Contents/Resources, or root
+                    finder.resourceURL, finder.bundleURL.deletingLastPathComponent()] // tests: next to the .xctest
+        for dir in dirs {
+            guard let url = dir?.appendingPathComponent(name) else { continue }
+            if FileManager.default.fileExists(atPath: url.path), let bundle = Bundle(url: url) { return bundle }
+        }
+        return .main
+    }()
+
     private static let englishBundle: Bundle = {
-        guard let path = Bundle.module.path(forResource: "en", ofType: "lproj"),
-              let bundle = Bundle(path: path) else { return .module }
+        guard let path = resources.path(forResource: "en", ofType: "lproj"),
+              let bundle = Bundle(path: path) else { return resources }
         return bundle
     }()
 
     static func tr(_ key: String, _ arguments: CVarArg...) -> String {
-        format(key, bundle: .module, arguments: arguments)
+        format(key, bundle: resources, arguments: arguments)
     }
 
     /// Explicit-language lookup keeps localization behavior testable and falls back to the package's English table.
     static func tr(_ key: String, language: String?, arguments: [CVarArg] = []) -> String {
-        let bundle = language.map { resourceBundle(for: $0) ?? englishBundle } ?? .module
+        let bundle = language.map { resourceBundle(for: $0) ?? englishBundle } ?? resources
         return format(key, bundle: bundle, arguments: arguments)
     }
 
@@ -22,7 +40,7 @@ enum L10n {
         // SwiftPM lowercases .lproj directory names in the built resource bundle (zh-Hans → zh-hans.lproj), and
         // Bundle.path(forResource:ofType:) matches exactly, so look the directory up case-insensitively.
         let wanted = language.lowercased()
-        let path = Bundle.module.paths(forResourcesOfType: "lproj", inDirectory: nil)
+        let path = resources.paths(forResourcesOfType: "lproj", inDirectory: nil)
             .first { ($0 as NSString).lastPathComponent.lowercased() == wanted + ".lproj" }
         guard let path else { return nil }
         return Bundle(path: path)
