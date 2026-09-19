@@ -2,14 +2,17 @@
 
 ## Unreleased
 
-- Served-model check: the Responses API names the model that actually served a request in the response's own
-  metadata (`response.created.model`) and advertises the capacity fallback in `x-codex-safety-buffering-*`
-  headers. Every probe now asks that first — one tiny streaming request, closed before any tokens are generated.
-  Served ≠ requested is a hard-evidence Downgraded, served = requested is a Match, and the three-fork fingerprint
-  only runs when the metadata is unavailable or errors. A mismatch that took 60–150 s of forked challenges now
-  takes about a second. The check identifies as the probe's resolved originator, like the forks do. `nerfed served
-  [--model]` runs just this check; `served_check` switches the automatic one off. The access token is used only
-  while its JWT is valid; the refresh token is never touched.
+- A second check next to the fingerprint: every probe first asks Codex's backend which model it says answers a
+  request for the session's model and effort (the `OpenAI-Model` header Codex itself checks, or `response.model` in
+  the first event), then closes the connection. The fingerprint still runs every time. The server's answer can raise
+  a verdict but never clear one: a Match it contradicts becomes Suspicious, a downgrade it admits to decides when
+  the fingerprint has no verdict of its own, and a Mismatch stands whatever the server says. An upgrade, a name the
+  catalog does not list, and a failed check are reported next to the verdict and change nothing. The panel shows it
+  in the row and in the report, in English and Chinese; `nerfed served` runs the check alone; Settings and
+  `served_check` switch it off. The access token is used only while its JWT is valid and only against a fixed URL
+  with redirects refused; the refresh token is never read. Thanks to @LamWS for the idea and the first version.
+- `nerfed config set` now stores `served_check` as a boolean; a value typed as `false` used to be kept as a string
+  and read as true.
 
 ## 0.5.1 — 2026-09-18
 
