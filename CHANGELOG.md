@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Served-model check: the Responses API names the model that actually served a request in the response's own
+  metadata (`response.created.model`) and advertises the capacity fallback in `x-codex-safety-buffering-*`
+  headers. Every probe now asks that first — one tiny streaming request, closed before any tokens are generated.
+  Served ≠ requested is a hard-evidence Downgraded, served = requested is a Match, and the three-fork fingerprint
+  only runs when the metadata is unavailable or errors. A mismatch that took 60–150 s of forked challenges now
+  takes about a second. The check identifies as the probe's resolved originator, like the forks do. `nerfed served
+  [--model]` runs just this check; `served_check` switches the automatic one off. The access token is used only
+  while its JWT is valid; the refresh token is never touched.
+
 ## 0.5.1 — 2026-09-18
 
 - The 0.5.0 app crashed at launch on every Mac except the one that built it: the localization looked its resource

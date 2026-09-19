@@ -24,6 +24,14 @@ You pick a model in Codex. This tells you whether that model is actually the one
 
 Everything runs on your Mac. Nothing is uploaded.
 
+Per probe, the first question goes to the server itself. The Responses API puts the model that *actually* served a
+request into the response's own metadata (`response.created.model`), and the headers advertise the capacity
+fallback behind swaps (`x-codex-safety-buffering-faster-model`). One tiny request, closed before any tokens are
+generated, answers "who would serve this account right now" with authority: served ≠ requested is a downgrade the
+server itself admits to, served = requested is a Match. No fingerprinting, no 300-number challenges, and it works
+for models outside the fingerprint bank. `nerfed served` runs just this check. When the metadata is unavailable
+(token expired, network), the probe falls back to the fingerprint below.
+
 Codex records, for every turn, which model and reasoning effort it asked for. The plugin reads those records after
 each turn and flags what changed without you changing it: a model swap, a lower reasoning effort, a hidden internal
 model such as `gpt-reserve`, a smaller context window. A move to a newer or larger model is reported as well, since
@@ -41,7 +49,7 @@ the model you selected:
 | Match | the model you selected answered |
 | Suspicious | the fingerprint leans elsewhere, but not confidently; it stands until the next probe |
 | Downgrade / Upgrade / Rerouted | a confident mismatch: top candidate at 80 % or more, your model at 20 % or less, at least two answers |
-| Downgraded | Codex's own records show a silent switch; no fingerprint needed |
+| Downgraded | Codex's own records show a silent switch, or the response metadata itself names another model; no fingerprint needed |
 | Upgraded | Codex's own records show a move to a newer or larger model |
 | Unlisted | your model is not in the fingerprint bank yet |
 | Invalid | no usable answer (tool use, refusal, network); not a verdict, the row keeps its last one and offers Retry |
@@ -99,6 +107,7 @@ Settings are in the app, or `nerfed config set <key> <value>`:
 | --- | --- | --- |
 | `frequency` | `30m` | per session: every N minutes of activity (`30m`) or every N turns (`turns:8`) |
 | `fresh_frequency` | `manual` | probe a brand-new session every N minutes, whatever you are doing |
+| `served_check` | `true` | ask the backend's response metadata who actually serves before spending tokens on a fingerprint probe |
 | `mode` | `auto` | `auto` probes in the background, `nudge` only reminds you |
 | `halt_on_mismatch` | `false` | block tools after a mismatch until you say resume |
 | `notify_on_ok`, `announce_ok` | `false` | also report Match |
@@ -113,11 +122,11 @@ verdicts show as "another account" and those sessions are probed again.
 
 ## Limits
 
-- "The model you selected" is the model Codex asked for. If the server swaps the weights and keeps the name, only the
-  fingerprint or a smaller context window can show it.
+- "The model you selected" is the model Codex asked for. If the server swaps the weights and keeps the name, the
+  response metadata usually says so; when it doesn't, only the fingerprint or a smaller context window can show it.
 - The bank is closed-set: a model outside it is mapped to its nearest look-alike.
-- A probe costs three short answers on your account. A fork that has not answered within five minutes is replaced
-  once, so a slow model does not drop out of the sample.
+- A probe costs one metadata request plus, when the metadata is inconclusive, three short answers on your account.
+  A fork that has not answered within five minutes is replaced once, so a slow model does not drop out of the sample.
 - A model or effort change made through Codex's own settings is shown as a question ("was that you?"), because the
   plugin cannot tell whether you or Codex changed it.
 - The probes run in a private app-server process that identifies itself as the client it checks for (the desktop app,
@@ -126,10 +135,12 @@ verdicts show as "another account" and those sessions are probed again.
 
 ## Privacy
 
-The plugin reads `~/.codex` (session records, the models cache, and `auth.json` only for an account hash and a masked
-e-mail) and writes to `~/.codex/is-gpt-nerfed` (probes, verdicts, `log.jsonl`). The forks are ordinary Codex
-inference under your account. The only network request of its own is one to GitHub every ten minutes for the latest
-release tag, while the app is open; switch it off in Settings and it makes none.
+The plugin reads `~/.codex` (session records, the models cache, and `auth.json` for an account hash, a masked
+e-mail, and the access token the served-model check sends back to OpenAI's own backend — the refresh token is never
+touched) and writes to `~/.codex/is-gpt-nerfed` (probes, verdicts, `log.jsonl`). The forks are ordinary Codex
+inference under your account. The only network requests of its own are one tiny streaming request to the codex
+backend per probe (closed before any tokens are generated) and one to GitHub every ten minutes for the latest
+release tag, while the app is open; switch either off (`served_check`, Settings) and it makes none.
 
 ## Credits
 

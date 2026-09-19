@@ -832,5 +832,120 @@ class SnapshotReportTests(unittest.TestCase):
         self.assertTrue(dgc.probe_row_valid({"status": "done", "verdict": "MATCH"}))
 
 
+class ServedModelTests(unittest.TestCase):
+    """The served-model check: one tiny request, the response's own metadata says who serves."""
+
+    class SSEHandler(__import__("http.server", fromlist=["BaseHTTPRequestHandler"]).BaseHTTPRequestHandler):
+        served_model = "gpt-6-astra"
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            if not (self.headers.get("Authorization") or "").startswith("Bearer "):
+                self.send_response(401)
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("x-codex-safety-buffering-enabled", "true")
+            self.send_header("x-codex-safety-buffering-faster-model", "gpt-5.6-luna")
+            self.end_headers()
+            ev = {"type": "response.created", "response": {"id": "r1", "model": type(self).served_model}}
+            self.wfile.write(f"event: response.created\ndata: {json.dumps(ev)}\n\n".encode())
+            self.wfile.flush()
+
+        def log_message(self, *a):
+            pass
+
+    def setUp(self):
+        import base64
+        import threading
+        from http.server import ThreadingHTTPServer
+
+        def b(d):
+            return base64.urlsafe_b64encode(json.dumps(d).encode()).rstrip(b"=").decode()
+        jwt = f"{b({'alg': 'none'})}.{b({'exp': time.time() + 3600})}.sig"
+        self.auth_path = os.path.join(os.environ["CODEX_HOME"], "auth.json")
+        with open(self.auth_path, "w") as f:
+            json.dump({"tokens": {"access_token": jwt}}, f)
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), self.SSEHandler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}/responses"
+        self.patcher = mock.patch.object(dgc.responses_meta, "RESPONSES_URL", self.url)
+        self.patcher.start()
+        dgc.ensure_dirs()
+        dgc.save_config({**dgc.DEFAULT_CONFIG, "codex_bin": FAKE_CODEX, "notify": False, "sound": False,
+                         "probe_timeout_s": 30, "served_check_timeout_s": 5})
+        dgc._BANK = None
+
+    def tearDown(self):
+        self.patcher.stop()
+        self.server.shutdown()
+        self.server.server_close()
+        if os.path.exists(self.auth_path):
+            os.remove(self.auth_path)
+
+    def set_served(self, model):
+        self.SSEHandler.served_model = model
+
+    def probe_id(self, out):
+        return out.split("probe ")[1].split()[0]
+
+    def test_match_skips_the_fingerprint(self):
+        self.set_served("gpt-6-astra")
+        rc, out = run_cli(["probe", "fresh", "--model", "gpt-6-astra"])
+        self.assertEqual(rc, 0, out)
+        self.assertIn("verdict: MATCH", out)
+        self.assertIn("server metadata: asked gpt-6-astra, served gpt-6-astra", out)
+        rec = dgc.read_json(dgc.probe_path(self.probe_id(out)))
+        self.assertEqual(rec["method"], "responses-metadata")
+        self.assertNotIn("forks", rec, "no ephemeral forks are needed when the metadata answers")
+        self.assertEqual(rec["served"]["served"], "gpt-6-astra")
+
+    def test_mismatch_is_hard_evidence_downgrade(self):
+        self.set_served("gpt-5.6-luna")
+        rc, out = run_cli(["probe", "fresh", "--model", "gpt-6-astra"])
+        self.assertEqual(rc, 0, out)
+        self.assertIn("verdict: DOWNGRADED!", out)
+        self.assertIn("the server itself says gpt-5.6-luna served it", out)
+        rec = dgc.read_json(dgc.probe_path(self.probe_id(out)))
+        self.assertEqual(rec["verdict"], "DOWNGRADED!")
+        self.assertEqual(rec["hard_evidence"][0]["kind"], "served_model_mismatch")
+        self.assertNotIn("forks", rec)
+
+    def test_check_failure_falls_back_to_fingerprint(self):
+        with mock.patch.object(dgc.responses_meta, "RESPONSES_URL", "http://127.0.0.1:1/none"):
+            rc, out = run_cli(["probe", "fresh", "--model", "gpt-6-astra"])
+        self.assertEqual(rc, 0, out)
+        self.assertIn("verdict: MATCH", out)
+        self.assertIn("3/3 answers used", out, "the fingerprint probe runs when the metadata check is unavailable")
+        rec = dgc.read_json(dgc.probe_path(self.probe_id(out)))
+        self.assertFalse(rec["served"]["ok"])
+        self.assertEqual(len(rec["forks"]), 3)
+
+    def test_served_command(self):
+        self.set_served("gpt-6-astra")
+        rc, out = run_cli(["served", "--model", "gpt-6-astra"])
+        self.assertEqual(rc, 0, out)
+        self.assertIn("served:    gpt-6-astra  (MATCH)", out)
+        self.assertIn("fallback model=gpt-5.6-luna", out)
+        self.set_served("gpt-5.6-luna")
+        rc, out = run_cli(["served", "--model", "gpt-6-astra"])
+        self.assertEqual(rc, 2, out)
+        self.assertIn("MISMATCH", out)
+
+    def test_expired_token_skips_the_check(self):
+        import base64
+
+        def b(d):
+            return base64.urlsafe_b64encode(json.dumps(d).encode()).rstrip(b"=").decode()
+        stale = f"{b({'alg': 'none'})}.{b({'exp': time.time() - 3600})}.sig"
+        with open(self.auth_path, "w") as f:
+            json.dump({"tokens": {"access_token": stale}}, f)
+        self.assertIsNone(dgc.responses_meta.read_access_token(os.environ["CODEX_HOME"]))
+        rc, out = run_cli(["probe", "fresh", "--model", "gpt-6-astra"])
+        self.assertIn("verdict: MATCH", out)
+        self.assertIn("3/3 answers used", out, "expired token → straight to the fingerprint probe")
+
+
 if __name__ == "__main__":
     unittest.main()
